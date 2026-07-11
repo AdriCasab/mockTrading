@@ -252,6 +252,31 @@ describe('P&L: the canonical example', () => {
     s3.posStock += 1;
     expect(isRiskless(s3)).toBe(false);
   });
+  it('a riskless carry book trades out at fair, preserving pnl exactly', () => {
+    const cfg: SessionConfig = { seed: 13, rounds: 24, noise: 1, twoExp: false, shotClock: 0 };
+    const s = newSession(cfg);
+    const K = s.env.strikes[2];
+    // combo (long call, short put) ten times, hedged with short stock -> long the r/c
+    applyFill(s, P.call(s.env, 0, K), 10, 3.0);
+    applyFill(s, P.put(s.env, 0, K), -10, 2.0);
+    s.posStock -= 10;
+    s.cash += 10 * (s.env.spot - 0.1);
+    expect(isFlat(s)).toBe(false);
+    expect(isRiskless(s)).toBe(true);
+    const before = pnl(s);
+    const s2 = reduce(s, { type: 'unwind' });
+    expect(isFlat(s2)).toBe(true);
+    expect(pnl(s2)).toBeCloseTo(before, 9);
+    expect(s2.cash + s2.banked).toBeCloseTo(before, 9);
+  });
+  it('trade-out is refused while the book has risk on', () => {
+    const cfg: SessionConfig = { seed: 13, rounds: 24, noise: 1, twoExp: false, shotClock: 0 };
+    const s = newSession(cfg);
+    applyFill(s, P.call(s.env, 0, s.env.strikes[2]), 10, 3.0);
+    expect(isRiskless(s)).toBe(false);
+    const s2 = reduce(s, { type: 'unwind' });
+    expect(Object.keys(s2.posOpt).length).toBeGreaterThan(0);
+  });
   it('a flat book has pnl = cash + banked (locked)', () => {
     const cfg: SessionConfig = { seed: 9, rounds: 24, noise: 1, twoExp: false, shotClock: 0 };
     const s = newSession(cfg);

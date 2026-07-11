@@ -116,7 +116,7 @@ export default function Game({ s, dispatch }: { s: GameState; dispatch: (a: Acti
       <div className="cols">
         <section>
           <Chain s={s} armed={armed} setArmed={setArmed} />
-          <Blotter s={s} />
+          <Blotter s={s} dispatch={dispatch} />
         </section>
         <aside>
           <OrderRail s={s} dispatch={dispatch} />

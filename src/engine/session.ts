@@ -71,7 +71,8 @@ export type Action =
   | { type: 'mm'; bid: number; ask: number }
   | { type: 'pass' }
   | { type: 'board'; m: number; K: number; right: Right; side: 'bid' | 'ask'; size?: number }
-  | { type: 'stock'; side: 'bid' | 'ask'; size?: number };
+  | { type: 'stock'; side: 'bid' | 'ask'; size?: number }
+  | { type: 'unwind' };
 
 export const cellKey = (m: number, K: number, right: Right) => `${m}|${K}|${right}`;
 
@@ -642,6 +643,25 @@ export function reduce(prev: GameState, a: Action): GameState {
         fair: f, edge: (dir === 1 ? f - price : price - f) * size, note: 'board trade',
       });
       feed(s, 'you', `You ${dir === 1 ? 'bought' : 'sold'} the ${product.label} ×${size} at ${fmt(price)} on the board.`);
+      afterFill(s);
+      break;
+    }
+    case 'unwind': {
+      // A riskless book is a cash equivalent — long the r/c and nothing else —
+      // so it redeems at fair, no spreads to cross. Never allowed with risk on.
+      if (isFlat(s) || !isRiskless(s)) break;
+      for (const [key, q] of Object.entries(s.posOpt)) {
+        const [m, K, right] = key.split('|');
+        s.cash += q * optTheo(s.env, Number(m), Number(K), right as Right);
+      }
+      s.posOpt = {};
+      s.cash += s.posStock * s.env.spot;
+      s.posStock = 0;
+      s.decisions.push({
+        round: s.round, label: 'carry book', action: 'traded out at fair',
+        fair: 0, edge: 0, note: 'riskless unwind',
+      });
+      feed(s, 'you', `You trade out of the carry at fair.`);
       afterFill(s);
       break;
     }
