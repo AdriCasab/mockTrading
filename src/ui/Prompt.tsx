@@ -5,7 +5,10 @@ import { roundTick } from '../engine/market';
 
 export default function Prompt({ s, dispatch }: { s: GameState; dispatch: (a: Action) => void }) {
   const pd = s.pending;
-  const total = pd && s.cfg.shotClock ? (pd.kind === 'mm' ? s.cfg.shotClock * 2 : s.cfg.shotClock) : 0;
+  // Structures get more clock than singles; making a market gets the most.
+  const legs = pd ? pd.product.legs.filter((l) => l.kind === 'opt').length : 0;
+  const mult = pd?.kind === 'mm' ? 2 : legs > 1 ? 1.5 : 1;
+  const total = pd && s.cfg.shotClock ? Math.round(s.cfg.shotClock * mult) : 0;
   const [left, setLeft] = useState(total);
   const [bid, setBid] = useState('');
   const [ask, setAsk] = useState('');

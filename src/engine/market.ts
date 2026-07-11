@@ -16,6 +16,7 @@ export type Env = {
   baseVol: number;
   skew: number;
   curv: number;
+  skewSeed: number; // per-session seed for the crowd's per-strike quote bias
 };
 
 export function makeEnv(r: Rng, twoExp: boolean): Env {
@@ -30,7 +31,18 @@ export function makeEnv(r: Rng, twoExp: boolean): Env {
     baseVol: 0.22 + r.next() * 0.18,
     skew: -0.1,
     curv: 0.6,
+    skewSeed: Math.floor(r.next() * 0x7fffffff),
   };
+}
+
+// The crowd's bias at a strike: shared by the call and the put (and stable
+// across re-quotes), so parity holds exactly within every strike — the board
+// is off at most one tick per strike, like a real class board, and the noise
+// cancels in single-strike parity products.
+export function strikeSkew(env: Env, m: number, K: number): number {
+  let h = (env.skewSeed ^ (m * 7919 + K * 131)) >>> 0;
+  h = Math.imul(h ^ (h >>> 13), 0x5bd1e995) >>> 0;
+  return [-1, 0, 0, 1][h % 4] * TICK;
 }
 
 export const fwd = (env: Env, m: number) => env.spot + env.rc[m];

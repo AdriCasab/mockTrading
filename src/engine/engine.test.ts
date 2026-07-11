@@ -174,18 +174,21 @@ describe('session mechanics', () => {
       }
     }
   });
-  it('make-a-market targets only an empty single call/put cell', () => {
-    let s = newSession(cfg);
+  it('make-a-market targets an empty cell whose counterpart strike is quoted', () => {
     let seen = 0;
-    while (s.phase === 'playing') {
-      const pd = s.pending!;
-      if (pd.kind === 'mm') {
-        seen++;
-        expect(pd.product.legs).toHaveLength(1);
-        const l = pd.product.legs[0] as { m: number; K: number; right: 'C' | 'P' };
-        expect(s.quotes[`${l.m}|${l.K}|${l.right}`]).toBeUndefined();
-        s = reduce(s, { type: 'pass' });
-      } else s = reduce(s, { type: 'leave' });
+    for (const seed of [123, 5, 999, 3344810]) {
+      let s = newSession({ seed, rounds: 24, noise: 1, twoExp: seed % 2 === 1, shotClock: 0 });
+      while (s.phase === 'playing') {
+        const pd = s.pending!;
+        if (pd.kind === 'mm') {
+          seen++;
+          expect(pd.product.legs).toHaveLength(1);
+          const l = pd.product.legs[0] as { m: number; K: number; right: 'C' | 'P' };
+          expect(s.quotes[`${l.m}|${l.K}|${l.right}`]).toBeUndefined();
+          expect(s.quotes[`${l.m}|${l.K}|${l.right === 'C' ? 'P' : 'C'}`]).toBeDefined();
+          s = reduce(s, { type: 'pass' });
+        } else s = reduce(s, { type: 'leave' });
+      }
     }
     expect(seen).toBeGreaterThan(0);
   });
@@ -219,6 +222,18 @@ describe('quote generation', () => {
       expect(q.ask).toBeGreaterThan(q.bid);
       expect(Math.abs(q.bid * 20 - Math.round(q.bid * 20))).toBeLessThan(1e-9);
       expect(Math.abs(q.ask * 20 - Math.round(q.ask * 20))).toBeLessThan(1e-9);
+    }
+  });
+  it('crowd quotes respect parity within a strike (skew shared by call and put)', () => {
+    let s = newSession({ seed: 314, rounds: 24, noise: 1, twoExp: false, shotClock: 0 });
+    while (s.phase === 'playing') s = reduce(s, s.pending!.kind === 'take' ? { type: 'leave' } : { type: 'pass' });
+    for (const K of s.env.strikes) {
+      const c = s.quotes[`0|${K}|C`];
+      const p = s.quotes[`0|${K}|P`];
+      if (!c || !p) continue;
+      const cMid = (c.bid + c.ask) / 2;
+      const pMid = (p.bid + p.ask) / 2;
+      expect(Math.abs(cMid - pMid - (s.env.spot - K + s.env.rc[0]))).toBeLessThanOrEqual(0.051);
     }
   });
 });

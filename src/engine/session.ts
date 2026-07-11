@@ -1,6 +1,6 @@
 import { Rng, mulberry32, pick, normal } from './rng';
 import {
-  Env, Right, makeEnv, optTheo, optDelta, roundTick, TICK, fmt,
+  Env, Right, makeEnv, optTheo, optDelta, roundTick, TICK, fmt, strikeSkew,
   stockBid, stockAsk,
 } from './market';
 import * as P from './products';
@@ -75,11 +75,10 @@ function emptyCells(s: GameState) {
   return allCells(s.env).filter((c) => !s.quotes[cellKey(c.m, c.K, c.right)]);
 }
 
-function mkQuote(env: Env, r: Rng, m: number, K: number, right: Right): Quote {
+function mkQuote(env: Env, m: number, K: number, right: Right): Quote {
   const t = optTheo(env, m, K, right);
   const w = t >= 1.5 ? 0.2 : 0.1;
-  const skew = (Math.floor(r.next() * 3) - 1) * TICK;
-  const bid = Math.max(0, roundTick(t - w / 2 + skew));
+  const bid = Math.max(0, roundTick(t - w / 2 + strikeSkew(env, m, K)));
   return { bid, ask: roundTick(bid + w) };
 }
 
@@ -88,7 +87,7 @@ function crowdFill(s: GameState, r: Rng, announce = true) {
   if (!empties.length) return;
   const nearby = empties.filter((c) => Math.abs(c.K - s.env.spot) <= 10);
   const c = pick(r, nearby.length ? nearby : empties);
-  const q = mkQuote(s.env, r, c.m, c.K, c.right);
+  const q = mkQuote(s.env, c.m, c.K, c.right);
   s.quotes[cellKey(c.m, c.K, c.right)] = q;
   if (announce)
     feed(s, 'crowd',
@@ -101,7 +100,7 @@ function stockMove(s: GameState, r: Rng) {
   s.env = { ...s.env, spot: roundTick(s.env.spot + d) };
   for (const key of Object.keys(s.quotes)) {
     const [m, K, right] = key.split('|');
-    s.quotes[key] = mkQuote(s.env, r, Number(m), Number(K), right as Right);
+    s.quotes[key] = mkQuote(s.env, Number(m), Number(K), right as Right);
   }
   feed(s, 'game',
     `Stock ${d > 0 ? 'ticks up' : 'ticks down'} to ${fmt(stockBid(s.env))} @ ${fmt(stockAsk(s.env))} — crowd refreshes its markets.`);
@@ -162,10 +161,14 @@ function singleCellKey(p: Product): string {
   return cellKey(l.m, l.K, l.right);
 }
 
-// Market-making requests only ever target an empty call/put cell: the player's
-// market (if it holds) becomes the standing market on the board.
+// Market-making requests only ever target an empty call/put cell whose
+// counterpart at the same strike is already quoted — making the market is
+// then a parity exercise, never a blind guess. The player's market (if it
+// holds) becomes the standing market on the board.
 function mmEvent(s: GameState, r: Rng): boolean {
-  const empties = emptyCells(s);
+  const empties = emptyCells(s).filter(
+    (c) => s.quotes[cellKey(c.m, c.K, c.right === 'C' ? 'P' : 'C')]
+  );
   if (!empties.length) return false;
   const nearby = empties.filter((c) => Math.abs(c.K - s.env.spot) <= 10);
   const c = pick(r, nearby.length ? nearby : empties);
@@ -203,12 +206,18 @@ function makePending(s: GameState, r: Rng) {
     return;
   }
   if (mmEvent(s, r)) return;
-  const atm = s.env.strikes[2];
-  const product = P.straddle(s.env, 0, atm);
+  // Last resort: quote a single that is already on the board (always anchored;
+  // at least the seed markets exist).
+  const key = pick(r, Object.keys(s.quotes));
+  const [m, K, right] = key.split('|');
+  const product = right === 'C' ? P.call(s.env, Number(m), Number(K)) : P.put(s.env, Number(m), Number(K));
   const f = fair(s.env, product);
-  const price = instPrice(s, r, f, 'bid');
-  s.pending = { kind: 'take', product, side: 'bid', price, fair: f };
-  feed(s, 'inst', `I'm ${fmt(price)} bid for the ${product.label}.`);
+  const side: 'bid' | 'ask' = r.next() < 0.5 ? 'bid' : 'ask';
+  const price = Math.max(TICK, instPrice(s, r, f, side));
+  s.pending = { kind: 'take', product, side, price, fair: f };
+  feed(s, 'inst', side === 'bid'
+    ? `I'm ${fmt(price)} bid for the ${product.label}.`
+    : `I'm asking ${fmt(price)} for the ${product.label}.`);
 }
 
 function advance(s: GameState, r: Rng) {
@@ -267,10 +276,13 @@ function hedgeHint(s: GameState) {
 const EPS = 0.011;
 const signed = (x: number) => `${x >= 0 ? '+' : ''}${x.toFixed(2)}`;
 
+// Board markets are only accurate to about a tick, so a sub-tick result is
+// judged as noise, not as a mistake.
 function judgeTrade(s: GameState, edge: number) {
-  if (edge > EPS) feed(s, 'game', `✓ Good trade: ${signed(edge)} vs fair.`);
-  else if (edge < -EPS) feed(s, 'game', `✗ Through fair: ${signed(edge)}.`);
-  else feed(s, 'game', `— Scratch. That was right at fair.`);
+  if (edge >= TICK - 0.001) feed(s, 'game', `✓ Good trade: ${signed(edge)} vs fair.`);
+  else if (edge <= -(TICK - 0.001)) feed(s, 'game', `✗ Through fair: ${signed(edge)}.`);
+  else if (Math.abs(edge) <= EPS) feed(s, 'game', `— Scratch. That was right at fair.`);
+  else feed(s, 'game', `— About fair (${signed(edge)}) — inside the board's noise.`);
 }
 
 export function newSession(cfg: SessionConfig): GameState {
@@ -313,7 +325,7 @@ export function reduce(prev: GameState, a: Action): GameState {
     case 'leave': {
       if (!pd || pd.kind !== 'take') break;
       const avail = pd.side === 'bid' ? pd.price - pd.fair : pd.fair - pd.price;
-      const missed = avail > EPS;
+      const missed = avail >= TICK - 0.001; // sub-tick edge is inside board noise
       s.decisions.push({
         round: s.round, label: pd.product.label,
         action: a.timeout ? 'let it go (clock ran out)' : 'left it',
@@ -344,7 +356,7 @@ export function reduce(prev: GameState, a: Action): GameState {
         edge = f - bid;
         note = 'picked off on your bid';
         feed(s, 'inst', `"Sold to you at ${fmt(bid)}!"`);
-        const q = mkQuote(s.env, r, leg.m, leg.K, leg.right);
+        const q = mkQuote(s.env, leg.m, leg.K, leg.right);
         s.quotes[key] = q;
         feed(s, 'crowd', `Crowd corrects it to ${fmt(q.bid)} at ${fmt(q.ask)}.`);
         feed(s, 'game', `✗ Picked off: ${signed(edge)}. Your bid was through fair.`);
@@ -353,7 +365,7 @@ export function reduce(prev: GameState, a: Action): GameState {
         edge = ask - f;
         note = 'picked off on your offer';
         feed(s, 'inst', `"Mine at ${fmt(ask)}!"`);
-        const q = mkQuote(s.env, r, leg.m, leg.K, leg.right);
+        const q = mkQuote(s.env, leg.m, leg.K, leg.right);
         s.quotes[key] = q;
         feed(s, 'crowd', `Crowd corrects it to ${fmt(q.bid)} at ${fmt(q.ask)}.`);
         feed(s, 'game', `✗ Picked off: ${signed(edge)}. Your offer was through fair.`);
@@ -387,7 +399,7 @@ export function reduce(prev: GameState, a: Action): GameState {
     case 'pass': {
       if (!pd || pd.kind !== 'mm') break;
       const leg = pd.product.legs[0] as Extract<P.Leg, { kind: 'opt' }>;
-      const q = mkQuote(s.env, r, leg.m, leg.K, leg.right);
+      const q = mkQuote(s.env, leg.m, leg.K, leg.right);
       s.quotes[singleCellKey(pd.product)] = q;
       s.decisions.push({
         round: s.round, label: pd.product.label,
