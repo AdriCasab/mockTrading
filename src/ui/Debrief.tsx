@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { GameState, pnl } from '../engine/session';
+import { GameState, isFlat, isRiskless, pnl } from '../engine/session';
 import { HistEntry, loadHistory } from './Setup';
 
 export default function Debrief({ s, onAgain }: { s: GameState; onAgain: () => void }) {
@@ -20,9 +20,10 @@ export default function Debrief({ s, onAgain }: { s: GameState; onAgain: () => v
 
   const trades = s.decisions.filter((d) => d.edge !== 0 || d.action.includes('at'));
   const pickoffs = s.decisions.filter((d) => d.note?.includes('picked off')).length;
-  const missed = s.decisions.filter((d) => d.note?.startsWith('missed')).length;
+  const missed = s.decisions.filter((d) => d.note?.startsWith('missed arb')).length;
   const edgeSum = s.decisions.reduce((a, d) => a + d.edge, 0);
   const drift = score - edgeSum;
+  const flat = isFlat(s) || isRiskless(s);
 
   return (
     <div className="app setup">
@@ -34,8 +35,12 @@ export default function Debrief({ s, onAgain }: { s: GameState; onAgain: () => v
           {score.toFixed(2)}
         </p>
         <p className="dim small">
-          {trades.length} trade{trades.length === 1 ? '' : 's'} · {pickoffs} pick-off
-          {pickoffs === 1 ? '' : 's'} · {missed} missed quote{missed === 1 ? '' : 's'}
+          {s.arbsSeen} arb{s.arbsSeen === 1 ? '' : 's'} surfaced · {s.arbsCaptured} captured ·{' '}
+          {missed} missed · {pickoffs} pick-off{pickoffs === 1 ? '' : 's'}
+        </p>
+        <p className="dim small">
+          {trades.length} trade{trades.length === 1 ? '' : 's'} ·{' '}
+          {flat ? 'you finished flat — everything locked' : 'you finished with open risk'}
           {Math.abs(drift) > 0.005 &&
             ` · ${drift > 0 ? '+' : ''}${drift.toFixed(2)} from market moves on open positions`}
         </p>

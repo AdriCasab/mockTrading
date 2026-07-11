@@ -10,15 +10,25 @@ export type Noise = 0 | 1 | 2;
 
 export type SessionConfig = {
   seed: number;
-  rounds: number;
+  rounds: number; // ticks of pit time
   noise: Noise;
   twoExp: boolean;
-  shotClock: number; // seconds, 0 = untimed
+  shotClock: number; // seconds per tick, 0 = advance manually
 };
 
-export type Pending =
-  | { kind: 'take'; product: Product; side: 'bid' | 'ask'; price: number; fair: number }
-  | { kind: 'mm'; product: Product; fair: number };
+// A live order resting in the pit. side is the broker's side: a 'bid' order
+// means the broker pays that price (you can sell to him).
+export type RestingOrder = {
+  id: number;
+  broker: string;
+  product: Product;
+  side: 'bid' | 'ask';
+  price: number;
+  ttl: number; // ticks until the broker pulls it
+  planted: boolean; // constructed to be arbitrage-able (for debrief stats)
+};
+
+export type MMRequest = { product: Product; fair: number; ttl: number };
 
 export type FeedItem = { round: number; who: 'inst' | 'crowd' | 'you' | 'game'; text: string };
 
@@ -39,7 +49,11 @@ export type GameState = {
   rng: number;
   quotes: Record<string, Quote>;
   round: number;
-  pending: Pending | null;
+  orders: RestingOrder[];
+  mm: MMRequest | null;
+  nextId: number;
+  arbsSeen: number;
+  arbsCaptured: number;
   feed: FeedItem[];
   decisions: Decision[];
   posOpt: Record<string, number>;
@@ -50,14 +64,17 @@ export type GameState = {
 };
 
 export type Action =
-  | { type: 'take' }
-  | { type: 'leave'; timeout?: boolean }
+  | { type: 'order'; id: number }
+  | { type: 'tick' }
   | { type: 'mm'; bid: number; ask: number }
-  | { type: 'pass'; timeout?: boolean }
+  | { type: 'pass' }
   | { type: 'board'; m: number; K: number; right: Right; side: 'bid' | 'ask' }
   | { type: 'stock'; side: 'bid' | 'ask' };
 
 export const cellKey = (m: number, K: number, right: Right) => `${m}|${K}|${right}`;
+
+const EPS = 0.011;
+const signed = (x: number) => `${x >= 0 ? '+' : ''}${x.toFixed(2)}`;
 
 function feed(s: GameState, who: FeedItem['who'], text: string) {
   s.feed.unshift({ round: s.round, who, text });
@@ -94,8 +111,11 @@ function crowdFill(s: GameState, r: Rng, announce = true) {
       `Crowd makes ${fmt(q.bid)} at ${fmt(q.ask)} on the ${s.env.months[c.m]} ${c.K} ${c.right === 'C' ? 'calls' : 'puts'}.`);
 }
 
+// The crowd re-centers the board when the stock moves, but resting broker
+// orders do NOT reprice — a stale order after a stock move is the classic
+// pit arbitrage.
 function stockMove(s: GameState, r: Rng) {
-  let d = roundTick(Math.max(-1, Math.min(1, normal(r) * 0.35)));
+  const d = roundTick(Math.max(-1, Math.min(1, normal(r) * 0.35)));
   if (d === 0) return;
   s.env = { ...s.env, spot: roundTick(s.env.spot + d) };
   for (const key of Object.keys(s.quotes)) {
@@ -103,7 +123,7 @@ function stockMove(s: GameState, r: Rng) {
     s.quotes[key] = mkQuote(s.env, Number(m), Number(K), right as Right);
   }
   feed(s, 'game',
-    `Stock ${d > 0 ? 'ticks up' : 'ticks down'} to ${fmt(stockBid(s.env))} @ ${fmt(stockAsk(s.env))} — crowd refreshes its markets.`);
+    `Stock ${d > 0 ? 'ticks up' : 'ticks down'} to ${fmt(stockBid(s.env))} @ ${fmt(stockAsk(s.env))} — crowd refreshes; the brokers' orders stand.`);
 }
 
 function instPrice(s: GameState, r: Rng, f: number, side: 'bid' | 'ask'): number {
@@ -145,8 +165,6 @@ function buildProduct(s: GameState, r: Rng, kind: string): Product | null {
   }
 }
 
-// A strike is "known" once the crowd, the player, or the instructor has put
-// any call or put market on it — only then can a quote there be priced.
 function strikeKnown(s: GameState, m: number, K: number): boolean {
   return !!(s.quotes[cellKey(m, K, 'C')] || s.quotes[cellKey(m, K, 'P')]);
 }
@@ -161,11 +179,163 @@ function singleCellKey(p: Product): string {
   return cellKey(l.m, l.K, l.right);
 }
 
-// Market-making requests only ever target an empty call/put cell whose
-// counterpart at the same strike is already quoted — making the market is
-// then a parity exercise, never a blind guess. The player's market (if it
-// holds) becomes the standing market on the board.
-function mmEvent(s: GameState, r: Rng): boolean {
+// ---------------------------------------------------------------------------
+// Closure engine: the best price at which one unit of an instrument can be
+// bought or sold RIGHT NOW, using the board directly or synthetically via
+// put-call parity at the same strike (crossing the stock spread). This is what
+// makes an order arbitrage-able "for free": sell it, buy the legs back, flat.
+// Prices are in quoted (vs-strike) space, banked cash at face.
+// ---------------------------------------------------------------------------
+
+export function bestBuy(s: GameState, m: number, K: number, right: Right): number | null {
+  const env = s.env;
+  const rc = env.rc[m];
+  const direct = s.quotes[cellKey(m, K, right)]?.ask;
+  const other = s.quotes[cellKey(m, K, right === 'C' ? 'P' : 'C')];
+  const synth = other === undefined ? undefined : right === 'C'
+    ? other.ask + (stockAsk(env) - K) + rc // buy put, buy stock
+    : other.ask - (stockBid(env) - K) - rc; // buy call, sell stock
+  const c = [direct, synth].filter((x): x is number => x !== undefined);
+  return c.length ? Math.min(...c) : null;
+}
+
+export function bestSell(s: GameState, m: number, K: number, right: Right): number | null {
+  const env = s.env;
+  const rc = env.rc[m];
+  const direct = s.quotes[cellKey(m, K, right)]?.bid;
+  const other = s.quotes[cellKey(m, K, right === 'C' ? 'P' : 'C')];
+  const synth = other === undefined ? undefined : right === 'C'
+    ? other.bid + (stockBid(env) - K) + rc // sell put, sell stock
+    : other.bid - (stockAsk(env) - K) - rc; // sell call, buy stock
+  const c = [direct, synth].filter((x): x is number => x !== undefined);
+  return c.length ? Math.max(...c) : null;
+}
+
+export function closureBuyCost(s: GameState, p: Product): number | null {
+  let cost = 0;
+  for (const l of p.legs) {
+    if (l.kind === 'cash') { cost += l.amt; continue; }
+    if (l.kind === 'stock') { cost += l.q * (l.q > 0 ? stockAsk(s.env) : stockBid(s.env)); continue; }
+    const px = l.q > 0 ? bestBuy(s, l.m, l.K, l.right) : bestSell(s, l.m, l.K, l.right);
+    if (px === null) return null;
+    cost += l.q * px;
+  }
+  return cost;
+}
+
+export function closureSellValue(s: GameState, p: Product): number | null {
+  let value = 0;
+  for (const l of p.legs) {
+    if (l.kind === 'cash') { value += l.amt; continue; }
+    if (l.kind === 'stock') { value += l.q * (l.q > 0 ? stockBid(s.env) : stockAsk(s.env)); continue; }
+    const px = l.q > 0 ? bestSell(s, l.m, l.K, l.right) : bestBuy(s, l.m, l.K, l.right);
+    if (px === null) return null;
+    value += l.q * px;
+  }
+  return value;
+}
+
+// Riskless profit available from trading against this order and immediately
+// flattening: via the board/synthetics, or via another broker's opposite
+// order in the identical product.
+export function orderArbProfit(s: GameState, o: RestingOrder): number | null {
+  const key = JSON.stringify(o.product.legs);
+  let best: number | undefined;
+  for (const o2 of s.orders) {
+    if (o2.id === o.id || o2.side === o.side) continue;
+    if (JSON.stringify(o2.product.legs) !== key) continue;
+    const pr = o.side === 'bid' ? o.price - o2.price : o2.price - o.price;
+    best = best === undefined ? pr : Math.max(best, pr);
+  }
+  const cl = o.side === 'bid' ? closureBuyCost(s, o.product) : closureSellValue(s, o.product);
+  if (cl !== null) {
+    const pr = o.side === 'bid' ? o.price - cl : cl - o.price;
+    best = best === undefined ? pr : Math.max(best, pr);
+  }
+  return best === undefined ? null : best;
+}
+
+// ---------------------------------------------------------------------------
+// The pit: several brokers with live resting orders at once.
+// ---------------------------------------------------------------------------
+
+const BROKERS = ['Rich', 'Sal', 'Dana', 'Moe', 'Vera'];
+
+function phaseKinds(s: GameState): string[] {
+  const frac = s.round / s.cfg.rounds;
+  if (frac <= 0.35) return ['call', 'put', 'bw', 'pns'];
+  if (frac <= 0.7) return ['straddle', 'strangle', 'callSpread', 'putSpread', 'call', 'put', 'bw'];
+  const kinds = ['fly', 'ironFly', 'box', 'rr', 'straddle', 'strangle'];
+  if (s.cfg.twoExp) kinds.push('roll', 'roll');
+  return kinds;
+}
+
+function mkOrderProduct(s: GameState, r: Rng): { product: Product; f: number } | null {
+  const kinds = phaseKinds(s);
+  for (let tries = 0; tries < 25; tries++) {
+    const product = buildProduct(s, r, pick(r, kinds));
+    if (!product) continue;
+    if (!productAnchored(s, product)) continue;
+    const f = fair(s.env, product);
+    if (!product.over && f < 0.15) continue;
+    return { product, f };
+  }
+  return null;
+}
+
+function orderFeedText(o: RestingOrder): string {
+  return o.side === 'bid'
+    ? `${o.broker} pays ${fmtPx(o.product, o.price)} for the ${o.product.label}.`
+    : `${o.broker} offers the ${o.product.label} at ${fmtPx(o.product, o.price)}.`;
+}
+
+function pushOrder(s: GameState, r: Rng, planted: boolean): boolean {
+  const pf = mkOrderProduct(s, r);
+  if (!pf) return false;
+  const side: 'bid' | 'ask' = r.next() < 0.5 ? 'bid' : 'ask';
+  let price: number;
+  if (planted) {
+    const base = side === 'bid' ? closureBuyCost(s, pf.product) : closureSellValue(s, pf.product);
+    if (base === null) return false;
+    const p = (1 + Math.floor(r.next() * 3)) * TICK;
+    price = roundTick(side === 'bid' ? base + p : base - p);
+  } else {
+    price = instPrice(s, r, pf.f, side);
+  }
+  if (!pf.product.over && price < TICK) return false;
+  const o: RestingOrder = {
+    id: s.nextId++, broker: pick(r, BROKERS), product: pf.product, side, price,
+    ttl: 2 + Math.floor(r.next() * (planted ? 2 : 3)), planted,
+  };
+  s.orders.push(o);
+  feed(s, 'inst', orderFeedText(o));
+  return true;
+}
+
+function addOrders(s: GameState, r: Rng) {
+  const target = Math.min(2 + Math.floor(s.round / 5), 4);
+  let guard = 0;
+  while (s.orders.length < target && guard++ < 8) {
+    const planted = !s.orders.some((x) => x.planted) && r.next() < 0.45;
+    pushOrder(s, r, planted);
+  }
+}
+
+function expireOrder(s: GameState, o: RestingOrder) {
+  const profit = orderArbProfit(s, o);
+  s.orders = s.orders.filter((x) => x.id !== o.id);
+  if (profit !== null && profit >= TICK - 0.001) {
+    s.arbsSeen++;
+    feed(s, 'game',
+      `✗ Missed: ${o.broker}'s ${o.side === 'bid' ? 'bid' : 'offer'} on the ${o.product.label} was free money (+${profit.toFixed(2)}).`);
+    s.decisions.push({
+      round: s.round, label: o.product.label, action: 'let it expire',
+      fair: fair(s.env, o.product), edge: 0, note: `missed arb +${profit.toFixed(2)}`,
+    });
+  }
+}
+
+function tryMM(s: GameState, r: Rng): boolean {
   const empties = emptyCells(s).filter(
     (c) => s.quotes[cellKey(c.m, c.K, c.right === 'C' ? 'P' : 'C')]
   );
@@ -173,66 +343,48 @@ function mmEvent(s: GameState, r: Rng): boolean {
   const nearby = empties.filter((c) => Math.abs(c.K - s.env.spot) <= 10);
   const c = pick(r, nearby.length ? nearby : empties);
   const product = c.right === 'C' ? P.call(s.env, c.m, c.K) : P.put(s.env, c.m, c.K);
-  s.pending = { kind: 'mm', product, fair: fair(s.env, product) };
+  s.mm = { product, fair: fair(s.env, product), ttl: 2 };
   feed(s, 'inst', `Make me a market in the ${product.label}.`);
   return true;
 }
 
-function makePending(s: GameState, r: Rng) {
-  const frac = s.round / s.cfg.rounds;
-  const mmP = frac <= 0.5 ? 0.45 : 0.3;
-  if (r.next() < mmP && mmEvent(s, r)) return;
-  let kinds: string[];
-  if (frac <= 0.35) kinds = ['call', 'put', 'bw', 'pns'];
-  else if (frac <= 0.7) kinds = ['straddle', 'strangle', 'callSpread', 'putSpread', 'call', 'put', 'bw'];
-  else {
-    kinds = ['fly', 'ironFly', 'box', 'rr', 'straddle', 'strangle'];
-    if (s.cfg.twoExp) kinds.push('roll', 'roll');
-  }
-  for (let tries = 0; tries < 25; tries++) {
-    const kind = pick(r, kinds);
-    const product = buildProduct(s, r, kind);
-    if (!product) continue;
-    if (!productAnchored(s, product)) continue; // no decision without a reference
-    const f = fair(s.env, product);
-    if (!product.over && f < 0.15) continue;
-    const side: 'bid' | 'ask' = r.next() < 0.5 ? 'bid' : 'ask';
-    const price = instPrice(s, r, f, side);
-    if (!product.over && price < TICK) continue;
-    s.pending = { kind: 'take', product, side, price, fair: f };
-    feed(s, 'inst', side === 'bid'
-      ? `I'm ${fmtPx(product, price)} bid for the ${product.label}.`
-      : `I'm asking ${fmtPx(product, price)} for the ${product.label}.`);
-    return;
-  }
-  if (mmEvent(s, r)) return;
-  // Last resort: quote a single that is already on the board (always anchored;
-  // at least the seed markets exist).
-  const key = pick(r, Object.keys(s.quotes));
-  const [m, K, right] = key.split('|');
-  const product = right === 'C' ? P.call(s.env, Number(m), Number(K)) : P.put(s.env, Number(m), Number(K));
-  const f = fair(s.env, product);
-  const side: 'bid' | 'ask' = r.next() < 0.5 ? 'bid' : 'ask';
-  const price = Math.max(TICK, instPrice(s, r, f, side));
-  s.pending = { kind: 'take', product, side, price, fair: f };
-  feed(s, 'inst', side === 'bid'
-    ? `I'm ${fmt(price)} bid for the ${product.label}.`
-    : `I'm asking ${fmt(price)} for the ${product.label}.`);
+function lapseMM(s: GameState) {
+  if (!s.mm) return;
+  const leg = s.mm.product.legs[0] as Extract<P.Leg, { kind: 'opt' }>;
+  const q = mkQuote(s.env, leg.m, leg.K, leg.right);
+  s.quotes[singleCellKey(s.mm.product)] = q;
+  s.decisions.push({
+    round: s.round, label: s.mm.product.label, action: 'let the request lapse',
+    fair: s.mm.fair, edge: 0, note: 'no market made',
+  });
+  feed(s, 'crowd', `Crowd makes it ${fmt(q.bid)} at ${fmt(q.ask)}.`);
+  feed(s, 'game', `✗ No quote — the crowd made the market for you.`);
+  s.mm = null;
 }
 
-function advance(s: GameState, r: Rng) {
+function advanceTick(s: GameState, r: Rng) {
   s.round++;
   if (s.round > s.cfg.rounds) {
+    for (const o of [...s.orders]) expireOrder(s, o);
+    if (s.mm) lapseMM(s);
     s.phase = 'debrief';
-    s.pending = null;
     return;
   }
+  for (const o of [...s.orders]) {
+    o.ttl -= 1;
+    if (o.ttl <= 0) expireOrder(s, o);
+  }
+  if (s.mm) {
+    s.mm.ttl -= 1;
+    if (s.mm.ttl <= 0) lapseMM(s);
+  }
   if (s.round > 2 && r.next() < 0.3) stockMove(s, r);
-  // The crowd fills some empty cells, but most of the board should come from
-  // the player's own make-a-market rounds.
-  if (emptyCells(s).length && r.next() < 0.5) crowdFill(s, r);
-  makePending(s, r);
+  if (emptyCells(s).length && r.next() < 0.4) crowdFill(s, r);
+  if (!s.mm && r.next() < 0.35) tryMM(s, r);
+  addOrders(s, r);
 }
+
+// ---------------------------------------------------------------------------
 
 export function applyFill(s: GameState, product: Product, qty: 1 | -1, price: number) {
   s.cash -= qty * price;
@@ -246,8 +398,6 @@ export function applyFill(s: GameState, product: Product, qty: 1 | -1, price: nu
   }
 }
 
-// The single score: position marked to hidden theos, plus cash. Includes every
-// spread you crossed to hedge and every move against open positions.
 export function pnl(s: GameState): number {
   let v = s.cash + s.banked + s.posStock * s.env.spot;
   for (const [key, q] of Object.entries(s.posOpt)) {
@@ -255,6 +405,31 @@ export function pnl(s: GameState): number {
     v += q * optTheo(s.env, Number(m), Number(K), right as Right);
   }
   return v;
+}
+
+export function isFlat(s: GameState): boolean {
+  return Object.keys(s.posOpt).length === 0 && s.posStock === 0;
+}
+
+// True when the book's expiry payoff is constant no matter where the stock
+// settles — empty, or fully offset via conversions/reversals/boxes/rolls:
+// calls and puts cancel at every strike and the residual synthetic stock is
+// hedged share-for-share.
+export function isRiskless(s: GameState): boolean {
+  const perStrike: Record<string, { c: number; p: number }> = {};
+  for (const [key, q] of Object.entries(s.posOpt)) {
+    const [m, K, right] = key.split('|');
+    const kk = `${m}|${K}`;
+    perStrike[kk] ??= { c: 0, p: 0 };
+    if (right === 'C') perStrike[kk].c += q;
+    else perStrike[kk].p += q;
+  }
+  let synthStock = 0;
+  for (const v of Object.values(perStrike)) {
+    if (v.c + v.p !== 0) return false;
+    synthStock += v.c;
+  }
+  return s.posStock + synthStock === 0;
 }
 
 export function netDelta(s: GameState): number {
@@ -266,15 +441,21 @@ export function netDelta(s: GameState): number {
   return d;
 }
 
-function hedgeHint(s: GameState) {
+function afterFill(s: GameState) {
+  if (isFlat(s)) {
+    if (Math.abs(s.cash + s.banked) > 0.001)
+      feed(s, 'game', `🔒 Book flat — ${signed(s.cash + s.banked)} locked in, no risk on.`);
+    return;
+  }
+  if (isRiskless(s)) {
+    feed(s, 'game', `🔒 Book locked — the legs offset, ${signed(pnl(s))} riskless.`);
+    return;
+  }
   const d = netDelta(s);
   if (Math.abs(d) >= 0.4)
     feed(s, 'game',
-      `Net delta ≈ ${d > 0 ? '+' : ''}${d.toFixed(2)} — stock is ${fmt(stockBid(s.env))} @ ${fmt(stockAsk(s.env))} if you want to flatten.`);
+      `Net delta ≈ ${signed(d)} — stock is ${fmt(stockBid(s.env))} @ ${fmt(stockAsk(s.env))} if you want to flatten.`);
 }
-
-const EPS = 0.011;
-const signed = (x: number) => `${x >= 0 ? '+' : ''}${x.toFixed(2)}`;
 
 // Board markets are only accurate to about a tick, so a sub-tick result is
 // judged as noise, not as a mistake.
@@ -289,12 +470,13 @@ export function newSession(cfg: SessionConfig): GameState {
   const r = mulberry32(cfg.seed || 1);
   const env = makeEnv(r, cfg.twoExp);
   const s: GameState = {
-    cfg, env, rng: 0, quotes: {}, round: 0, pending: null, feed: [], decisions: [],
+    cfg, env, rng: 0, quotes: {}, round: 0, orders: [], mm: null, nextId: 1,
+    arbsSeen: 0, arbsCaptured: 0, feed: [], decisions: [],
     posOpt: {}, posStock: 0, cash: 0, banked: 0, phase: 'playing',
   };
   for (let i = 0; i < 3; i++) crowdFill(s, r, false);
-  feed(s, 'game', `Session open. Stock ${fmt(stockBid(env))} @ ${fmt(stockAsk(env))}, r/c ${env.rc.map(fmt).join(' / ')}.`);
-  advance(s, r);
+  feed(s, 'game', `Pit open. Stock ${fmt(stockBid(env))} @ ${fmt(stockAsk(env))}, r/c ${env.rc.map(fmt).join(' / ')}.`);
+  advanceTick(s, r);
   s.rng = r.state;
   return s;
 }
@@ -303,56 +485,49 @@ export function reduce(prev: GameState, a: Action): GameState {
   if (prev.phase !== 'playing') return prev;
   const s = structuredClone(prev);
   const r = mulberry32(s.rng);
-  const pd = s.pending;
 
   switch (a.type) {
-    case 'take': {
-      if (!pd || pd.kind !== 'take') break;
-      const qty: 1 | -1 = pd.side === 'ask' ? 1 : -1; // buy their offer / sell to their bid
-      applyFill(s, pd.product, qty, pd.price);
-      const edge = qty === 1 ? pd.fair - pd.price : pd.price - pd.fair;
-      s.decisions.push({
-        round: s.round, label: pd.product.label,
-        action: `${qty === 1 ? 'bought' : 'sold'} at ${fmtPx(pd.product, pd.price)}`,
-        fair: pd.fair, edge,
-      });
-      feed(s, 'you', `You ${qty === 1 ? 'bought' : 'sold'} the ${pd.product.label} at ${fmtPx(pd.product, pd.price)}.`);
-      judgeTrade(s, edge);
-      hedgeHint(s);
-      advance(s, r);
+    case 'tick': {
+      advanceTick(s, r);
       break;
     }
-    case 'leave': {
-      if (!pd || pd.kind !== 'take') break;
-      const avail = pd.side === 'bid' ? pd.price - pd.fair : pd.fair - pd.price;
-      const missed = avail >= TICK - 0.001; // sub-tick edge is inside board noise
+    case 'order': {
+      const o = s.orders.find((x) => x.id === a.id);
+      if (!o) break;
+      const cp = orderArbProfit(s, o);
+      const qty: 1 | -1 = o.side === 'ask' ? 1 : -1;
+      applyFill(s, o.product, qty, o.price);
+      s.orders = s.orders.filter((x) => x.id !== o.id);
+      const f = fair(s.env, o.product);
+      const edge = qty === 1 ? f - o.price : o.price - f;
+      const isArb = cp !== null && cp >= TICK - 0.001;
+      if (isArb) {
+        s.arbsSeen++;
+        s.arbsCaptured++;
+        feed(s, 'game', `✓ Arb: the legs close for ${signed(cp!)} riskless — flatten it.`);
+      }
       s.decisions.push({
-        round: s.round, label: pd.product.label,
-        action: a.timeout ? 'let it go (clock ran out)' : 'left it',
-        fair: pd.fair, edge: 0,
-        note: missed ? `missed +${avail.toFixed(2)}` : undefined,
+        round: s.round, label: o.product.label,
+        action: `${qty === 1 ? 'bought' : 'sold'} at ${fmtPx(o.product, o.price)} (${o.broker})`,
+        fair: f, edge, note: isArb ? `arb +${cp!.toFixed(2)} available` : undefined,
       });
-      if (missed && r.next() < 0.6)
-        feed(s, 'crowd', pd.side === 'bid'
-          ? `Crowd hits him at ${fmtPx(pd.product, pd.price)}.`
-          : `Crowd lifts him at ${fmtPx(pd.product, pd.price)}.`);
-      feed(s, 'game', missed
-        ? `✗ Missed ${signed(avail)} — that quote was off.`
-        : `✓ Good leave. Nothing there.`);
-      advance(s, r);
+      feed(s, 'you', `You ${qty === 1 ? 'bought' : 'sold'} the ${o.product.label} at ${fmtPx(o.product, o.price)}.`);
+      if (!isArb) judgeTrade(s, edge);
+      afterFill(s);
       break;
     }
     case 'mm': {
-      if (!pd || pd.kind !== 'mm') break;
+      if (!s.mm) break;
       const { bid, ask } = a;
-      const f = pd.fair;
+      const f = s.mm.fair;
+      const product = s.mm.product;
       const eps = TICK / 2;
-      const key = singleCellKey(pd.product);
-      const leg = pd.product.legs[0] as Extract<P.Leg, { kind: 'opt' }>;
+      const key = singleCellKey(product);
+      const leg = product.legs[0] as Extract<P.Leg, { kind: 'opt' }>;
       let edge = 0;
       let note: string | undefined;
       if (bid > f + eps) {
-        applyFill(s, pd.product, 1, bid);
+        applyFill(s, product, 1, bid);
         edge = f - bid;
         note = 'picked off on your bid';
         feed(s, 'inst', `"Sold to you at ${fmt(bid)}!"`);
@@ -361,7 +536,7 @@ export function reduce(prev: GameState, a: Action): GameState {
         feed(s, 'crowd', `Crowd corrects it to ${fmt(q.bid)} at ${fmt(q.ask)}.`);
         feed(s, 'game', `✗ Picked off: ${signed(edge)}. Your bid was through fair.`);
       } else if (ask < f - eps) {
-        applyFill(s, pd.product, -1, ask);
+        applyFill(s, product, -1, ask);
         edge = ask - f;
         note = 'picked off on your offer';
         feed(s, 'inst', `"Mine at ${fmt(ask)}!"`);
@@ -373,11 +548,11 @@ export function reduce(prev: GameState, a: Action): GameState {
         s.quotes[key] = { bid, ask }; // your market is now the market
         if (r.next() < 0.5) {
           if (r.next() < 0.5) {
-            applyFill(s, pd.product, -1, ask);
+            applyFill(s, product, -1, ask);
             edge = ask - f;
             feed(s, 'inst', `He lifts your offer at ${fmt(ask)}.`);
           } else {
-            applyFill(s, pd.product, 1, bid);
+            applyFill(s, product, 1, bid);
             edge = f - bid;
             feed(s, 'inst', `He hits your bid at ${fmt(bid)}.`);
           }
@@ -389,26 +564,25 @@ export function reduce(prev: GameState, a: Action): GameState {
       }
       if (ask - bid > 0.45) note = note ? `${note}; wide market` : 'wide market';
       s.decisions.push({
-        round: s.round, label: pd.product.label,
+        round: s.round, label: product.label,
         action: `quoted ${fmt(bid)}–${fmt(ask)}`, fair: f, edge, note,
       });
-      hedgeHint(s);
-      advance(s, r);
+      s.mm = null;
+      afterFill(s);
       break;
     }
     case 'pass': {
-      if (!pd || pd.kind !== 'mm') break;
-      const leg = pd.product.legs[0] as Extract<P.Leg, { kind: 'opt' }>;
+      if (!s.mm) break;
+      const leg = s.mm.product.legs[0] as Extract<P.Leg, { kind: 'opt' }>;
       const q = mkQuote(s.env, leg.m, leg.K, leg.right);
-      s.quotes[singleCellKey(pd.product)] = q;
+      s.quotes[singleCellKey(s.mm.product)] = q;
       s.decisions.push({
-        round: s.round, label: pd.product.label,
-        action: a.timeout ? 'froze (clock ran out)' : 'declined to quote',
-        fair: pd.fair, edge: 0, note: 'no market made',
+        round: s.round, label: s.mm.product.label, action: 'declined to quote',
+        fair: s.mm.fair, edge: 0, note: 'no market made',
       });
       feed(s, 'crowd', `Crowd makes it ${fmt(q.bid)} at ${fmt(q.ask)}.`);
       feed(s, 'game', `✗ No quote — the crowd made the market for you.`);
-      advance(s, r);
+      s.mm = null;
       break;
     }
     case 'board': {
@@ -425,7 +599,8 @@ export function reduce(prev: GameState, a: Action): GameState {
         fair: f, edge: qty === 1 ? f - price : price - f, note: 'board trade',
       });
       feed(s, 'you', `You ${qty === 1 ? 'bought' : 'sold'} the ${product.label} at ${fmt(price)} on the board.`);
-      break; // board trades don't consume the round
+      afterFill(s);
+      break;
     }
     case 'stock': {
       const price = a.side === 'ask' ? stockAsk(s.env) : stockBid(s.env);
@@ -439,6 +614,7 @@ export function reduce(prev: GameState, a: Action): GameState {
         note: 'stock trade',
       });
       feed(s, 'you', `You ${qty === 1 ? 'bought' : 'sold'} stock at ${fmt(price)}.`);
+      afterFill(s);
       break;
     }
   }

@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Action, GameState, pnl } from '../engine/session';
+import { Action, GameState, isFlat, isRiskless, netDelta, pnl } from '../engine/session';
 import { fmt, stockBid, stockAsk } from '../engine/market';
 import Chain from './Chain';
-import Prompt from './Prompt';
+import OrderRail from './OrderRail';
 import Feed from './Feed';
 import Blotter from './Blotter';
 
@@ -11,9 +11,25 @@ export type Armed = { id: string; label: string; action: Action } | null;
 export default function Game({ s, dispatch }: { s: GameState; dispatch: (a: Action) => void }) {
   const [month, setMonth] = useState(0);
   const [armed, setArmed] = useState<Armed>(null);
+  const [left, setLeft] = useState(s.cfg.shotClock);
   useEffect(() => setArmed(null), [s.round]);
 
+  useEffect(() => {
+    if (!s.cfg.shotClock) return;
+    setLeft(s.cfg.shotClock);
+    const id = setInterval(() => setLeft((x) => x - 1), 1000);
+    return () => clearInterval(id);
+  }, [s.round, s.cfg.shotClock]);
+
+  useEffect(() => {
+    if (s.cfg.shotClock && left <= 0) dispatch({ type: 'tick' });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [left]);
+
   const score = pnl(s);
+  const flat = isFlat(s);
+  const locked = !flat && isRiskless(s);
+  const d = netDelta(s);
   const bid = stockBid(s.env);
   const ask = stockAsk(s.env);
 
@@ -43,12 +59,22 @@ export default function Game({ s, dispatch }: { s: GameState; dispatch: (a: Acti
         <div className="chips">
           <span className="chip">r/c {s.env.rc.map((x) => x.toFixed(2)).join(' / ')}</span>
           <span className="chip">
-            round {Math.min(s.round, s.cfg.rounds)}/{s.cfg.rounds}
+            tick {Math.min(s.round, s.cfg.rounds)}/{s.cfg.rounds}
+          </span>
+          <span className={`chip ${flat || locked ? 'pos' : ''}`}>
+            {flat ? '🔒 flat' : locked ? '🔒 locked' : `Δ ${d >= 0 ? '+' : ''}${d.toFixed(2)}`}
           </span>
           <span className={`chip ${score >= 0 ? 'pos' : 'neg'}`}>
             {score >= 0 ? '+' : ''}
             {score.toFixed(2)}
           </span>
+          {s.cfg.shotClock ? (
+            <span className={`chip ${left <= 3 ? 'neg' : ''}`}>next tick {Math.max(left, 0)}s</span>
+          ) : (
+            <button className="chipBtn" onClick={() => dispatch({ type: 'tick' })}>
+              Next tick →
+            </button>
+          )}
         </div>
       </header>
 
@@ -74,7 +100,7 @@ export default function Game({ s, dispatch }: { s: GameState; dispatch: (a: Acti
           <Blotter s={s} />
         </section>
         <aside>
-          <Prompt s={s} dispatch={dispatch} />
+          <OrderRail s={s} dispatch={dispatch} />
           <Feed items={s.feed} />
         </aside>
       </div>
