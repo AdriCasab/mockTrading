@@ -225,19 +225,11 @@ input[type='checkbox'] {
   }
 }
 
-.tabs {
-  display: flex;
-  gap: 6px;
-  margin-bottom: 10px;
+.monthChain + .monthChain {
+  margin-top: 14px;
 }
-.tab {
-  min-height: 34px;
-  padding: 4px 16px;
-  border-radius: 999px;
-}
-.tab.on {
-  border-color: var(--accent);
-  color: var(--accent);
+.monthChain h2 {
+  margin: 0 0 4px;
 }
 
 table.chain {

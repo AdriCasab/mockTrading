@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Action, GameState } from '../engine/session';
-import { fmtPx, legsText } from '../engine/products';
+import { fmtPx } from '../engine/products';
 import { roundTick } from '../engine/market';
 
 function MMCard({ s, dispatch }: { s: GameState; dispatch: (a: Action) => void }) {
@@ -50,10 +50,6 @@ export default function OrderRail({ s, dispatch }: { s: GameState; dispatch: (a:
           </p>
           <button className="primary big" onClick={() => dispatch({ type: 'order', id: o.id })}>
             {o.side === 'bid' ? 'Hit it' : 'Take it'}
-            <small>
-              {o.side === 'bid' ? 'sell' : 'buy'} at {fmtPx(o.product, o.price)} —{' '}
-              {legsText(s.env, o.product, o.side === 'bid' ? -1 : 1)}
-            </small>
           </button>
         </div>
       ))}

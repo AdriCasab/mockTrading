@@ -77,9 +77,9 @@ export default function Setup({
           <input type="checkbox" checked={timed} onChange={(e) => setTimed(e.target.checked)} />
           {timed && (
             <select value={secs} onChange={(e) => setSecs(Number(e.target.value))}>
-              <option value={15}>15s</option>
-              <option value={25}>25s</option>
-              <option value={40}>40s</option>
+              {[5, 10, 15, 20, 25, 30].map((v) => (
+                <option key={v} value={v}>{v}s</option>
+              ))}
             </select>
           )}
         </label>

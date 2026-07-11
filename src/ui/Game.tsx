@@ -9,7 +9,6 @@ import Blotter from './Blotter';
 export type Armed = { id: string; label: string; action: Action } | null;
 
 export default function Game({ s, dispatch }: { s: GameState; dispatch: (a: Action) => void }) {
-  const [month, setMonth] = useState(0);
   const [armed, setArmed] = useState<Armed>(null);
   const [left, setLeft] = useState(s.cfg.shotClock);
   useEffect(() => setArmed(null), [s.round]);
@@ -96,7 +95,7 @@ export default function Game({ s, dispatch }: { s: GameState; dispatch: (a: Acti
 
       <div className="cols">
         <section>
-          <Chain s={s} month={month} setMonth={setMonth} armed={armed} setArmed={setArmed} />
+          <Chain s={s} armed={armed} setArmed={setArmed} />
           <Blotter s={s} />
         </section>
         <aside>
