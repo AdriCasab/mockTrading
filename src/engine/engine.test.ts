@@ -144,17 +144,61 @@ describe('session mechanics', () => {
     }
     expect(pnl(s)).toBeCloseTo(0, 9); // never traded -> flat
   });
-  it('instructor picks off a bid above fair', () => {
+  it('instructor picks off a bid above fair, and the crowd corrects the cell', () => {
     let s = newSession(cfg);
     while (s.phase === 'playing' && s.pending!.kind !== 'mm') s = reduce(s, { type: 'leave' });
     if (s.phase === 'playing' && s.pending!.kind === 'mm') {
+      const leg = s.pending!.product.legs[0] as { m: number; K: number; right: 'C' | 'P' };
       const f = s.pending!.fair;
       const bid = roundTick(f + 3 * TICK);
       s = reduce(s, { type: 'mm', bid, ask: roundTick(bid + 2 * TICK) });
       const d = s.decisions[s.decisions.length - 1];
       expect(d.edge).toBeLessThan(0);
       expect(d.note).toContain('picked off');
+      expect(s.quotes[`${leg.m}|${leg.K}|${leg.right}`]).toBeDefined();
     }
+  });
+  it('take quotes only appear on strikes with a posted call or put market', () => {
+    for (const seed of [1, 77, 20260711]) {
+      let s = newSession({ seed, rounds: 30, noise: 1, twoExp: seed % 2 === 0, shotClock: 0 });
+      while (s.phase === 'playing') {
+        const pd = s.pending!;
+        if (pd.kind === 'take') {
+          for (const l of pd.product.legs) {
+            if (l.kind !== 'opt') continue;
+            const known = s.quotes[`${l.m}|${l.K}|C`] || s.quotes[`${l.m}|${l.K}|P`];
+            expect(known, `${pd.product.label} leg ${l.K} unanchored`).toBeTruthy();
+          }
+          s = reduce(s, { type: 'leave' });
+        } else s = reduce(s, { type: 'pass' });
+      }
+    }
+  });
+  it('make-a-market targets only an empty single call/put cell', () => {
+    let s = newSession(cfg);
+    let seen = 0;
+    while (s.phase === 'playing') {
+      const pd = s.pending!;
+      if (pd.kind === 'mm') {
+        seen++;
+        expect(pd.product.legs).toHaveLength(1);
+        const l = pd.product.legs[0] as { m: number; K: number; right: 'C' | 'P' };
+        expect(s.quotes[`${l.m}|${l.K}|${l.right}`]).toBeUndefined();
+        s = reduce(s, { type: 'pass' });
+      } else s = reduce(s, { type: 'leave' });
+    }
+    expect(seen).toBeGreaterThan(0);
+  });
+  it('a market that holds is posted to the board at the quoted prices', () => {
+    let s = newSession(cfg);
+    while (s.phase === 'playing' && s.pending!.kind !== 'mm') s = reduce(s, { type: 'leave' });
+    expect(s.phase).toBe('playing');
+    const pd = s.pending!;
+    const l = pd.product.legs[0] as { m: number; K: number; right: 'C' | 'P' };
+    const bid = roundTick(pd.fair - 2 * TICK);
+    const ask = roundTick(pd.fair + 2 * TICK);
+    s = reduce(s, { type: 'mm', bid, ask });
+    expect(s.quotes[`${l.m}|${l.K}|${l.right}`]).toEqual({ bid, ask });
   });
   it('board trades fill at the posted quote and record spread cost', () => {
     let s = newSession(cfg);

@@ -53,12 +53,15 @@ export default function Prompt({ s, dispatch }: { s: GameState; dispatch: (a: Ac
           <p className="instLine">
             {pd.side === 'bid'
               ? `Instructor: “I'm ${fmtPx(pd.product, pd.price)} bid for the ${pd.product.label}.”`
-              : `Instructor: “I'll sell the ${pd.product.label} at ${fmtPx(pd.product, pd.price)}.”`}
+              : `Instructor: “I'm asking ${fmtPx(pd.product, pd.price)} for the ${pd.product.label}.”`}
           </p>
           <div className="actions">
             <button className="primary big" onClick={() => dispatch({ type: 'take' })}>
-              {pd.side === 'bid' ? 'Sell' : 'Buy'} at {fmtPx(pd.product, pd.price)}
-              <small>{legsText(s.env, pd.product, pd.side === 'bid' ? -1 : 1)}</small>
+              {pd.side === 'bid' ? 'Hit it' : 'Take it'}
+              <small>
+                {pd.side === 'bid' ? 'sell' : 'buy'} at {fmtPx(pd.product, pd.price)} —{' '}
+                {legsText(s.env, pd.product, pd.side === 'bid' ? -1 : 1)}
+              </small>
             </button>
             <button className="big" onClick={() => dispatch({ type: 'leave' })}>
               Leave it

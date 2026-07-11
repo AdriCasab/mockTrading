@@ -146,10 +146,39 @@ function buildProduct(s: GameState, r: Rng, kind: string): Product | null {
   }
 }
 
-const MM_KINDS = ['call', 'put', 'straddle', 'strangle', 'callSpread', 'putSpread', 'fly'];
+// A strike is "known" once the crowd, the player, or the instructor has put
+// any call or put market on it — only then can a quote there be priced.
+function strikeKnown(s: GameState, m: number, K: number): boolean {
+  return !!(s.quotes[cellKey(m, K, 'C')] || s.quotes[cellKey(m, K, 'P')]);
+}
+
+function productAnchored(s: GameState, p: Product): boolean {
+  return p.legs.every((l) => l.kind !== 'opt' || strikeKnown(s, l.m, l.K));
+}
+
+function singleCellKey(p: Product): string {
+  const l = p.legs[0];
+  if (l.kind !== 'opt') throw new Error('not a single option');
+  return cellKey(l.m, l.K, l.right);
+}
+
+// Market-making requests only ever target an empty call/put cell: the player's
+// market (if it holds) becomes the standing market on the board.
+function mmEvent(s: GameState, r: Rng): boolean {
+  const empties = emptyCells(s);
+  if (!empties.length) return false;
+  const nearby = empties.filter((c) => Math.abs(c.K - s.env.spot) <= 10);
+  const c = pick(r, nearby.length ? nearby : empties);
+  const product = c.right === 'C' ? P.call(s.env, c.m, c.K) : P.put(s.env, c.m, c.K);
+  s.pending = { kind: 'mm', product, fair: fair(s.env, product) };
+  feed(s, 'inst', `Make me a market in the ${product.label}.`);
+  return true;
+}
 
 function makePending(s: GameState, r: Rng) {
   const frac = s.round / s.cfg.rounds;
+  const mmP = frac <= 0.5 ? 0.45 : 0.3;
+  if (r.next() < mmP && mmEvent(s, r)) return;
   let kinds: string[];
   if (frac <= 0.35) kinds = ['call', 'put', 'bw', 'pns'];
   else if (frac <= 0.7) kinds = ['straddle', 'strangle', 'callSpread', 'putSpread', 'call', 'put', 'bw'];
@@ -157,26 +186,23 @@ function makePending(s: GameState, r: Rng) {
     kinds = ['fly', 'ironFly', 'box', 'rr', 'straddle', 'strangle'];
     if (s.cfg.twoExp) kinds.push('roll', 'roll');
   }
-  for (let tries = 0; tries < 15; tries++) {
+  for (let tries = 0; tries < 25; tries++) {
     const kind = pick(r, kinds);
     const product = buildProduct(s, r, kind);
     if (!product) continue;
+    if (!productAnchored(s, product)) continue; // no decision without a reference
     const f = fair(s.env, product);
     if (!product.over && f < 0.15) continue;
-    if (MM_KINDS.includes(kind) && r.next() < 0.3) {
-      s.pending = { kind: 'mm', product, fair: f };
-      feed(s, 'inst', `Make me a market in the ${product.label}.`);
-      return;
-    }
     const side: 'bid' | 'ask' = r.next() < 0.5 ? 'bid' : 'ask';
     const price = instPrice(s, r, f, side);
     if (!product.over && price < TICK) continue;
     s.pending = { kind: 'take', product, side, price, fair: f };
     feed(s, 'inst', side === 'bid'
       ? `I'm ${fmtPx(product, price)} bid for the ${product.label}.`
-      : `I'll sell the ${product.label} at ${fmtPx(product, price)}.`);
+      : `I'm asking ${fmtPx(product, price)} for the ${product.label}.`);
     return;
   }
+  if (mmEvent(s, r)) return;
   const atm = s.env.strikes[2];
   const product = P.straddle(s.env, 0, atm);
   const f = fair(s.env, product);
@@ -193,10 +219,9 @@ function advance(s: GameState, r: Rng) {
     return;
   }
   if (s.round > 2 && r.next() < 0.3) stockMove(s, r);
-  if (emptyCells(s).length && r.next() < 0.75) {
-    crowdFill(s, r);
-    if (r.next() < 0.35) crowdFill(s, r);
-  }
+  // The crowd fills some empty cells, but most of the board should come from
+  // the player's own make-a-market rounds.
+  if (emptyCells(s).length && r.next() < 0.5) crowdFill(s, r);
   makePending(s, r);
 }
 
@@ -239,10 +264,13 @@ function hedgeHint(s: GameState) {
       `Net delta ≈ ${d > 0 ? '+' : ''}${d.toFixed(2)} — stock is ${fmt(stockBid(s.env))} @ ${fmt(stockAsk(s.env))} if you want to flatten.`);
 }
 
-function instReaction(s: GameState, r: Rng, edge: number) {
-  if (edge > 0.01) feed(s, 'inst', pick(r, [`He winces. "Nice trade."`, `"Hm. Sharper than you look."`]));
-  else if (edge < -0.01) feed(s, 'inst', pick(r, [`He grins. "Thank you!"`, `"Pleasure doing business."`]));
-  else feed(s, 'inst', `"Scratch." He shrugs.`);
+const EPS = 0.011;
+const signed = (x: number) => `${x >= 0 ? '+' : ''}${x.toFixed(2)}`;
+
+function judgeTrade(s: GameState, edge: number) {
+  if (edge > EPS) feed(s, 'game', `✓ Good trade: ${signed(edge)} vs fair.`);
+  else if (edge < -EPS) feed(s, 'game', `✗ Through fair: ${signed(edge)}.`);
+  else feed(s, 'game', `— Scratch. That was right at fair.`);
 }
 
 export function newSession(cfg: SessionConfig): GameState {
@@ -277,7 +305,7 @@ export function reduce(prev: GameState, a: Action): GameState {
         fair: pd.fair, edge,
       });
       feed(s, 'you', `You ${qty === 1 ? 'bought' : 'sold'} the ${pd.product.label} at ${fmtPx(pd.product, pd.price)}.`);
-      instReaction(s, r, edge);
+      judgeTrade(s, edge);
       hedgeHint(s);
       advance(s, r);
       break;
@@ -285,16 +313,20 @@ export function reduce(prev: GameState, a: Action): GameState {
     case 'leave': {
       if (!pd || pd.kind !== 'take') break;
       const avail = pd.side === 'bid' ? pd.price - pd.fair : pd.fair - pd.price;
+      const missed = avail > EPS;
       s.decisions.push({
         round: s.round, label: pd.product.label,
         action: a.timeout ? 'let it go (clock ran out)' : 'left it',
         fair: pd.fair, edge: 0,
-        note: avail > TICK / 2 ? `missed +${avail.toFixed(2)}` : undefined,
+        note: missed ? `missed +${avail.toFixed(2)}` : undefined,
       });
-      if (avail > TICK / 2 && r.next() < 0.6)
+      if (missed && r.next() < 0.6)
         feed(s, 'crowd', pd.side === 'bid'
           ? `Crowd hits him at ${fmtPx(pd.product, pd.price)}.`
           : `Crowd lifts him at ${fmtPx(pd.product, pd.price)}.`);
+      feed(s, 'game', missed
+        ? `✗ Missed ${signed(avail)} — that quote was off.`
+        : `✓ Good leave. Nothing there.`);
       advance(s, r);
       break;
     }
@@ -303,6 +335,8 @@ export function reduce(prev: GameState, a: Action): GameState {
       const { bid, ask } = a;
       const f = pd.fair;
       const eps = TICK / 2;
+      const key = singleCellKey(pd.product);
+      const leg = pd.product.legs[0] as Extract<P.Leg, { kind: 'opt' }>;
       let edge = 0;
       let note: string | undefined;
       if (bid > f + eps) {
@@ -310,23 +344,36 @@ export function reduce(prev: GameState, a: Action): GameState {
         edge = f - bid;
         note = 'picked off on your bid';
         feed(s, 'inst', `"Sold to you at ${fmt(bid)}!"`);
+        const q = mkQuote(s.env, r, leg.m, leg.K, leg.right);
+        s.quotes[key] = q;
+        feed(s, 'crowd', `Crowd corrects it to ${fmt(q.bid)} at ${fmt(q.ask)}.`);
+        feed(s, 'game', `✗ Picked off: ${signed(edge)}. Your bid was through fair.`);
       } else if (ask < f - eps) {
         applyFill(s, pd.product, -1, ask);
         edge = ask - f;
         note = 'picked off on your offer';
         feed(s, 'inst', `"Mine at ${fmt(ask)}!"`);
-      } else if (r.next() < 0.5) {
-        if (r.next() < 0.5) {
-          applyFill(s, pd.product, -1, ask);
-          edge = ask - f;
-          feed(s, 'inst', `He lifts your offer at ${fmt(ask)}.`);
-        } else {
-          applyFill(s, pd.product, 1, bid);
-          edge = f - bid;
-          feed(s, 'inst', `He hits your bid at ${fmt(bid)}.`);
-        }
+        const q = mkQuote(s.env, r, leg.m, leg.K, leg.right);
+        s.quotes[key] = q;
+        feed(s, 'crowd', `Crowd corrects it to ${fmt(q.bid)} at ${fmt(q.ask)}.`);
+        feed(s, 'game', `✗ Picked off: ${signed(edge)}. Your offer was through fair.`);
       } else {
-        feed(s, 'inst', `"Fair market." He moves on.`);
+        s.quotes[key] = { bid, ask }; // your market is now the market
+        if (r.next() < 0.5) {
+          if (r.next() < 0.5) {
+            applyFill(s, pd.product, -1, ask);
+            edge = ask - f;
+            feed(s, 'inst', `He lifts your offer at ${fmt(ask)}.`);
+          } else {
+            applyFill(s, pd.product, 1, bid);
+            edge = f - bid;
+            feed(s, 'inst', `He hits your bid at ${fmt(bid)}.`);
+          }
+          feed(s, 'game', `✓ Market held: ${signed(edge)} earned at your price.`);
+        } else {
+          feed(s, 'inst', `"Fair enough." Your market stands on the board.`);
+          feed(s, 'game', `✓ Market held — fair was inside your quote.`);
+        }
       }
       if (ask - bid > 0.45) note = note ? `${note}; wide market` : 'wide market';
       s.decisions.push({
@@ -339,12 +386,16 @@ export function reduce(prev: GameState, a: Action): GameState {
     }
     case 'pass': {
       if (!pd || pd.kind !== 'mm') break;
+      const leg = pd.product.legs[0] as Extract<P.Leg, { kind: 'opt' }>;
+      const q = mkQuote(s.env, r, leg.m, leg.K, leg.right);
+      s.quotes[singleCellKey(pd.product)] = q;
       s.decisions.push({
         round: s.round, label: pd.product.label,
         action: a.timeout ? 'froze (clock ran out)' : 'declined to quote',
         fair: pd.fair, edge: 0, note: 'no market made',
       });
-      feed(s, 'inst', `"You'll have to make a market eventually."`);
+      feed(s, 'crowd', `Crowd makes it ${fmt(q.bid)} at ${fmt(q.ask)}.`);
+      feed(s, 'game', `✗ No quote — the crowd made the market for you.`);
       advance(s, r);
       break;
     }
