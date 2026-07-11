@@ -104,7 +104,7 @@ describe('closure engine', () => {
     expect(closureBuyCost(crafted, straddle)).toBeCloseTo(3.2 + 3.2, 9);
     expect(closureSellValue(crafted, straddle)).toBeCloseTo(3.0 + 2.8, 9);
     const order: RestingOrder = {
-      id: 99, broker: 'T', product: straddle, side: 'bid', price: 6.55, ttl: 1, planted: false,
+      id: 99, broker: 'T', product: straddle, side: 'bid', price: 6.55, size: 1, ttl: 1, planted: false,
     };
     const withOrder = { ...crafted, orders: [order] };
     expect(orderArbProfit(withOrder, order)).toBeCloseTo(6.55 - 6.4, 9);
@@ -112,15 +112,15 @@ describe('closure engine', () => {
   it('detects a direct pair arb between two brokers on the same product', () => {
     const straddle = P.straddle(crafted.env, 0, K);
     // Pair route (6.70 vs 6.30 = 0.40) beats the board closure (6.70 - 6.40 = 0.30).
-    const bidO: RestingOrder = { id: 1, broker: 'A', product: straddle, side: 'bid', price: 6.7, ttl: 2, planted: false };
-    const askO: RestingOrder = { id: 2, broker: 'B', product: straddle, side: 'ask', price: 6.3, ttl: 2, planted: false };
+    const bidO: RestingOrder = { id: 1, broker: 'A', product: straddle, side: 'bid', price: 6.7, size: 1, ttl: 2, planted: false };
+    const askO: RestingOrder = { id: 2, broker: 'B', product: straddle, side: 'ask', price: 6.3, size: 1, ttl: 2, planted: false };
     const s2 = { ...crafted, orders: [bidO, askO] };
     expect(orderArbProfit(s2, bidO)).toBeCloseTo(0.4, 9);
   });
   it('flags a missed arb when the order expires', () => {
     const straddle = P.straddle(crafted.env, 0, K);
     const order: RestingOrder = {
-      id: 7, broker: 'T', product: straddle, side: 'bid', price: 6.55, ttl: 1, planted: false,
+      id: 7, broker: 'T', product: straddle, side: 'bid', price: 6.55, size: 1, ttl: 1, planted: false,
     };
     const s2: GameState = { ...structuredClone(crafted), orders: [order], round: 3 };
     const s3 = reduce(s2, { type: 'tick' });

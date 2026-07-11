@@ -209,6 +209,16 @@ input[type='checkbox'] {
 .armedBar span {
   flex: 1;
 }
+.sizeChip {
+  min-height: 32px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+}
+.sizeChip.on {
+  border-color: var(--amber);
+  color: var(--amber);
+}
 
 .cols {
   display: grid;

@@ -6,12 +6,14 @@ import OrderRail from './OrderRail';
 import Feed from './Feed';
 import Blotter from './Blotter';
 
-export type Armed = { id: string; label: string; action: Action } | null;
+export type Armed = { id: string; label: string; action: Action; defaultSize?: number } | null;
 
 export default function Game({ s, dispatch }: { s: GameState; dispatch: (a: Action) => void }) {
   const [armed, setArmed] = useState<Armed>(null);
+  const [armedSize, setArmedSize] = useState(1);
   const [left, setLeft] = useState(s.cfg.shotClock);
   useEffect(() => setArmed(null), [s.round]);
+  useEffect(() => setArmedSize(armed?.defaultSize ?? 1), [armed?.id, armed?.defaultSize]);
 
   useEffect(() => {
     if (!s.cfg.shotClock) return;
@@ -31,6 +33,7 @@ export default function Game({ s, dispatch }: { s: GameState; dispatch: (a: Acti
   const d = netDelta(s);
   const bid = stockBid(s.env);
   const ask = stockAsk(s.env);
+  const hedgeSize = Math.min(99, Math.max(1, Math.round(Math.abs(d))));
 
   return (
     <div className="app">
@@ -40,7 +43,10 @@ export default function Game({ s, dispatch }: { s: GameState; dispatch: (a: Acti
           <button
             className={`px ${armed?.id === 'stock|bid' ? 'sel' : ''}`}
             onClick={() =>
-              setArmed({ id: 'stock|bid', label: `Sell stock at ${fmt(bid)}`, action: { type: 'stock', side: 'bid' } })
+              setArmed({
+                id: 'stock|bid', label: `Sell stock at ${fmt(bid)}`,
+                action: { type: 'stock', side: 'bid' }, defaultSize: hedgeSize,
+              })
             }
           >
             {fmt(bid)}
@@ -49,7 +55,10 @@ export default function Game({ s, dispatch }: { s: GameState; dispatch: (a: Acti
           <button
             className={`px ${armed?.id === 'stock|ask' ? 'sel' : ''}`}
             onClick={() =>
-              setArmed({ id: 'stock|ask', label: `Buy stock at ${fmt(ask)}`, action: { type: 'stock', side: 'ask' } })
+              setArmed({
+                id: 'stock|ask', label: `Buy stock at ${fmt(ask)}`,
+                action: { type: 'stock', side: 'ask' }, defaultSize: hedgeSize,
+              })
             }
           >
             {fmt(ask)}
@@ -79,11 +88,22 @@ export default function Game({ s, dispatch }: { s: GameState; dispatch: (a: Acti
 
       {armed && (
         <div className="armedBar">
-          <span>{armed.label}?</span>
+          <span>
+            {armed.label} ×{armedSize}?
+          </span>
+          {[1, 5, 10, 20].map((v) => (
+            <button
+              key={v}
+              className={`sizeChip ${armedSize === v ? 'on' : ''}`}
+              onClick={() => setArmedSize(v)}
+            >
+              {v}
+            </button>
+          ))}
           <button
             className="primary"
             onClick={() => {
-              dispatch(armed.action);
+              dispatch({ ...armed.action, size: armedSize } as Action);
               setArmed(null);
             }}
           >

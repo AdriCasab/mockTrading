@@ -45,8 +45,8 @@ export default function OrderRail({ s, dispatch }: { s: GameState; dispatch: (a:
           </p>
           <p className="instLine">
             {o.side === 'bid'
-              ? `“I'll pay ${fmtPx(o.product, o.price)} for the ${o.product.label}.”`
-              : `“At ${fmtPx(o.product, o.price)}, I'm a seller of the ${o.product.label}.”`}
+              ? `“I'll pay ${fmtPx(o.product, o.price)} for the ${o.product.label}, ${o.size} up.”`
+              : `“At ${fmtPx(o.product, o.price)}, I'm a seller of the ${o.product.label}, ${o.size} up.”`}
           </p>
           <button className="primary big" onClick={() => dispatch({ type: 'order', id: o.id })}>
             {o.side === 'bid' ? 'Hit it' : 'Take it'}

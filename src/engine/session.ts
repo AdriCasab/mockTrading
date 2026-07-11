@@ -17,13 +17,15 @@ export type SessionConfig = {
 };
 
 // A live order resting in the pit. side is the broker's side: a 'bid' order
-// means the broker pays that price (you can sell to him).
+// means the broker pays that price (you can sell to him). size is the lot
+// count — fills are all-or-none at the full size.
 export type RestingOrder = {
   id: number;
   broker: string;
   product: Product;
   side: 'bid' | 'ask';
   price: number;
+  size: number;
   ttl: number; // ticks until the broker pulls it
   planted: boolean; // constructed to be arbitrage-able (for debrief stats)
 };
@@ -68,8 +70,8 @@ export type Action =
   | { type: 'tick' }
   | { type: 'mm'; bid: number; ask: number }
   | { type: 'pass' }
-  | { type: 'board'; m: number; K: number; right: Right; side: 'bid' | 'ask' }
-  | { type: 'stock'; side: 'bid' | 'ask' };
+  | { type: 'board'; m: number; K: number; right: Right; side: 'bid' | 'ask'; size?: number }
+  | { type: 'stock'; side: 'bid' | 'ask'; size?: number };
 
 export const cellKey = (m: number, K: number, right: Right) => `${m}|${K}|${right}`;
 
@@ -285,8 +287,8 @@ function mkOrderProduct(s: GameState, r: Rng): { product: Product; f: number } |
 
 function orderFeedText(o: RestingOrder): string {
   return o.side === 'bid'
-    ? `${o.broker} pays ${fmtPx(o.product, o.price)} for the ${o.product.label}.`
-    : `${o.broker} offers the ${o.product.label} at ${fmtPx(o.product, o.price)}.`;
+    ? `${o.broker} pays ${fmtPx(o.product, o.price)} for the ${o.product.label}, ${o.size} up.`
+    : `${o.broker} offers the ${o.product.label} at ${fmtPx(o.product, o.price)}, ${o.size} up.`;
 }
 
 function pushOrder(s: GameState, r: Rng, planted: boolean): boolean {
@@ -305,6 +307,7 @@ function pushOrder(s: GameState, r: Rng, planted: boolean): boolean {
   if (!pf.product.over && price < TICK) return false;
   const o: RestingOrder = {
     id: s.nextId++, broker: pick(r, BROKERS), product: pf.product, side, price,
+    size: pick(r, [5, 10, 10, 20]),
     ttl: 2 + Math.floor(r.next() * (planted ? 2 : 3)), planted,
   };
   s.orders.push(o);
@@ -313,12 +316,40 @@ function pushOrder(s: GameState, r: Rng, planted: boolean): boolean {
 }
 
 function addOrders(s: GameState, r: Rng) {
-  const target = Math.min(2 + Math.floor(s.round / 5), 4);
+  const target = Math.min(3 + Math.floor(s.round / 8), 4);
   let guard = 0;
   while (s.orders.length < target && guard++ < 8) {
     const planted = !s.orders.some((x) => x.planted) && r.next() < 0.45;
     pushOrder(s, r, planted);
   }
+}
+
+// The anecdote made flesh: a resting broker walks his own quote — sometimes
+// straight through fair, which is the arb you have to notice mid-life.
+function improveOrder(s: GameState, r: Rng) {
+  const candidates = s.orders.filter((o) => !o.planted);
+  if (!candidates.length) return;
+  const o = pick(r, candidates);
+  const base = o.side === 'bid' ? closureBuyCost(s, o.product) : closureSellValue(s, o.product);
+  let next: number | null = null;
+  let throughFair = false;
+  if (r.next() < 0.6 && base !== null) {
+    const p = (1 + Math.floor(r.next() * 2)) * TICK;
+    next = roundTick(o.side === 'bid' ? base + p : base - p);
+    throughFair = true;
+  }
+  const improves = next !== null && (o.side === 'bid' ? next > o.price : next < o.price);
+  if (!improves) {
+    next = roundTick(o.side === 'bid' ? o.price + TICK : o.price - TICK);
+    throughFair = false;
+  }
+  if (!o.product.over && next! < TICK) return;
+  o.price = next!;
+  if (throughFair) o.planted = true;
+  o.ttl = Math.max(o.ttl, 2);
+  feed(s, 'inst', o.side === 'bid'
+    ? `${o.broker} improves — ${fmtPx(o.product, o.price)} bid now for the ${o.product.label}!`
+    : `${o.broker} improves — offers the ${o.product.label} at ${fmtPx(o.product, o.price)} now!`);
 }
 
 function expireOrder(s: GameState, o: RestingOrder) {
@@ -327,10 +358,11 @@ function expireOrder(s: GameState, o: RestingOrder) {
   if (profit !== null && profit >= TICK - 0.001) {
     s.arbsSeen++;
     feed(s, 'game',
-      `✗ Missed: ${o.broker}'s ${o.side === 'bid' ? 'bid' : 'offer'} on the ${o.product.label} was free money (+${profit.toFixed(2)}).`);
+      `✗ Missed: ${o.broker}'s ${o.side === 'bid' ? 'bid' : 'offer'} on the ${o.product.label} was free money (+${profit.toFixed(2)}/lot on ${o.size}).`);
     s.decisions.push({
       round: s.round, label: o.product.label, action: 'let it expire',
-      fair: fair(s.env, o.product), edge: 0, note: `missed arb +${profit.toFixed(2)}`,
+      fair: fair(s.env, o.product), edge: 0,
+      note: `missed arb +${(profit * o.size).toFixed(2)}`,
     });
   }
 }
@@ -381,12 +413,14 @@ function advanceTick(s: GameState, r: Rng) {
   if (s.round > 2 && r.next() < 0.3) stockMove(s, r);
   if (emptyCells(s).length && r.next() < 0.4) crowdFill(s, r);
   if (!s.mm && r.next() < 0.35) tryMM(s, r);
+  if (s.orders.length && r.next() < 0.25) improveOrder(s, r);
   addOrders(s, r);
 }
 
 // ---------------------------------------------------------------------------
 
-export function applyFill(s: GameState, product: Product, qty: 1 | -1, price: number) {
+// qty is a signed count: +10 buys ten, -5 sells five.
+export function applyFill(s: GameState, product: Product, qty: number, price: number) {
   s.cash -= qty * price;
   for (const l of product.legs) {
     if (l.kind === 'opt') {
@@ -457,12 +491,14 @@ function afterFill(s: GameState) {
       `Net delta ≈ ${signed(d)} — stock is ${fmt(stockBid(s.env))} @ ${fmt(stockAsk(s.env))} if you want to flatten.`);
 }
 
-// Board markets are only accurate to about a tick, so a sub-tick result is
-// judged as noise, not as a mistake.
-function judgeTrade(s: GameState, edge: number) {
-  if (edge >= TICK - 0.001) feed(s, 'game', `✓ Good trade: ${signed(edge)} vs fair.`);
-  else if (edge <= -(TICK - 0.001)) feed(s, 'game', `✗ Through fair: ${signed(edge)}.`);
-  else if (Math.abs(edge) <= EPS) feed(s, 'game', `— Scratch. That was right at fair.`);
+// Board markets are only accurate to about a tick, so a sub-tick per-lot
+// result is judged as noise, not as a mistake. edge is the total; size scales
+// the thresholds back to per-lot terms.
+function judgeTrade(s: GameState, edge: number, size = 1) {
+  const perLot = edge / size;
+  if (perLot >= TICK - 0.001) feed(s, 'game', `✓ Good trade: ${signed(edge)} vs fair.`);
+  else if (perLot <= -(TICK - 0.001)) feed(s, 'game', `✗ Through fair: ${signed(edge)}.`);
+  else if (Math.abs(perLot) <= EPS) feed(s, 'game', `— Scratch. That was right at fair.`);
   else feed(s, 'game', `— About fair (${signed(edge)}) — inside the board's noise.`);
 }
 
@@ -495,24 +531,26 @@ export function reduce(prev: GameState, a: Action): GameState {
       const o = s.orders.find((x) => x.id === a.id);
       if (!o) break;
       const cp = orderArbProfit(s, o);
-      const qty: 1 | -1 = o.side === 'ask' ? 1 : -1;
-      applyFill(s, o.product, qty, o.price);
+      const dir = o.side === 'ask' ? 1 : -1;
+      applyFill(s, o.product, dir * o.size, o.price);
       s.orders = s.orders.filter((x) => x.id !== o.id);
       const f = fair(s.env, o.product);
-      const edge = qty === 1 ? f - o.price : o.price - f;
+      const edge = (dir === 1 ? f - o.price : o.price - f) * o.size;
       const isArb = cp !== null && cp >= TICK - 0.001;
       if (isArb) {
         s.arbsSeen++;
         s.arbsCaptured++;
-        feed(s, 'game', `✓ Arb: the legs close for ${signed(cp!)} riskless — flatten it.`);
+        feed(s, 'game',
+          `✓ Arb: the legs close for ${signed(cp!)}/lot riskless (${signed(cp! * o.size)} on ${o.size}) — flatten it.`);
       }
       s.decisions.push({
         round: s.round, label: o.product.label,
-        action: `${qty === 1 ? 'bought' : 'sold'} at ${fmtPx(o.product, o.price)} (${o.broker})`,
-        fair: f, edge, note: isArb ? `arb +${cp!.toFixed(2)} available` : undefined,
+        action: `${dir === 1 ? 'bought' : 'sold'} ${o.size} at ${fmtPx(o.product, o.price)} (${o.broker})`,
+        fair: f, edge, note: isArb ? `arb ${signed(cp! * o.size)} available` : undefined,
       });
-      feed(s, 'you', `You ${qty === 1 ? 'bought' : 'sold'} the ${o.product.label} at ${fmtPx(o.product, o.price)}.`);
-      if (!isArb) judgeTrade(s, edge);
+      feed(s, 'you',
+        `You ${dir === 1 ? 'bought' : 'sold'} the ${o.product.label} ×${o.size} at ${fmtPx(o.product, o.price)}.`);
+      if (!isArb) judgeTrade(s, edge, o.size);
       afterFill(s);
       break;
     }
@@ -527,19 +565,21 @@ export function reduce(prev: GameState, a: Action): GameState {
       let edge = 0;
       let note: string | undefined;
       if (bid > f + eps) {
-        applyFill(s, product, 1, bid);
-        edge = f - bid;
+        const sz = pick(r, [5, 10, 20]);
+        applyFill(s, product, sz, bid);
+        edge = (f - bid) * sz;
         note = 'picked off on your bid';
-        feed(s, 'inst', `"Sold to you at ${fmt(bid)}!"`);
+        feed(s, 'inst', `"Sold to you at ${fmt(bid)}, ${sz} up!"`);
         const q = mkQuote(s.env, leg.m, leg.K, leg.right);
         s.quotes[key] = q;
         feed(s, 'crowd', `Crowd corrects it to ${fmt(q.bid)} at ${fmt(q.ask)}.`);
         feed(s, 'game', `✗ Picked off: ${signed(edge)}. Your bid was through fair.`);
       } else if (ask < f - eps) {
-        applyFill(s, product, -1, ask);
-        edge = ask - f;
+        const sz = pick(r, [5, 10, 20]);
+        applyFill(s, product, -sz, ask);
+        edge = (ask - f) * sz;
         note = 'picked off on your offer';
-        feed(s, 'inst', `"Mine at ${fmt(ask)}!"`);
+        feed(s, 'inst', `"Mine at ${fmt(ask)}, ${sz} up!"`);
         const q = mkQuote(s.env, leg.m, leg.K, leg.right);
         s.quotes[key] = q;
         feed(s, 'crowd', `Crowd corrects it to ${fmt(q.bid)} at ${fmt(q.ask)}.`);
@@ -547,16 +587,18 @@ export function reduce(prev: GameState, a: Action): GameState {
       } else {
         s.quotes[key] = { bid, ask }; // your market is now the market
         if (r.next() < 0.5) {
+          const sz = pick(r, [5, 10, 20]);
           if (r.next() < 0.5) {
-            applyFill(s, product, -1, ask);
-            edge = ask - f;
-            feed(s, 'inst', `He lifts your offer at ${fmt(ask)}.`);
+            applyFill(s, product, -sz, ask);
+            edge = (ask - f) * sz;
+            feed(s, 'inst', `He lifts your offer at ${fmt(ask)}, ${sz} up.`);
           } else {
-            applyFill(s, product, 1, bid);
-            edge = f - bid;
-            feed(s, 'inst', `He hits your bid at ${fmt(bid)}.`);
+            applyFill(s, product, sz, bid);
+            edge = (f - bid) * sz;
+            feed(s, 'inst', `He hits your bid at ${fmt(bid)}, ${sz} up.`);
           }
-          feed(s, 'game', `✓ Market held: ${signed(edge)} earned at your price.`);
+          note = 'inventory from your market';
+          feed(s, 'game', `✓ Market held: ${signed(edge)} earned at your price — inventory to manage.`);
         } else {
           feed(s, 'inst', `"Fair enough." Your market stands on the board.`);
           feed(s, 'game', `✓ Market held — fair was inside your quote.`);
@@ -588,32 +630,34 @@ export function reduce(prev: GameState, a: Action): GameState {
     case 'board': {
       const q = s.quotes[cellKey(a.m, a.K, a.right)];
       if (!q) break;
+      const size = Math.max(1, Math.round(a.size ?? 1));
       const product = a.right === 'C' ? P.call(s.env, a.m, a.K) : P.put(s.env, a.m, a.K);
-      const qty: 1 | -1 = a.side === 'ask' ? 1 : -1;
+      const dir = a.side === 'ask' ? 1 : -1;
       const price = a.side === 'ask' ? q.ask : q.bid;
       const f = fair(s.env, product);
-      applyFill(s, product, qty, price);
+      applyFill(s, product, dir * size, price);
       s.decisions.push({
         round: s.round, label: product.label,
-        action: `${qty === 1 ? 'bought' : 'sold'} at ${fmt(price)} on the board`,
-        fair: f, edge: qty === 1 ? f - price : price - f, note: 'board trade',
+        action: `${dir === 1 ? 'bought' : 'sold'} ${size} at ${fmt(price)} on the board`,
+        fair: f, edge: (dir === 1 ? f - price : price - f) * size, note: 'board trade',
       });
-      feed(s, 'you', `You ${qty === 1 ? 'bought' : 'sold'} the ${product.label} at ${fmt(price)} on the board.`);
+      feed(s, 'you', `You ${dir === 1 ? 'bought' : 'sold'} the ${product.label} ×${size} at ${fmt(price)} on the board.`);
       afterFill(s);
       break;
     }
     case 'stock': {
+      const size = Math.max(1, Math.round(a.size ?? 1));
       const price = a.side === 'ask' ? stockAsk(s.env) : stockBid(s.env);
-      const qty: 1 | -1 = a.side === 'ask' ? 1 : -1;
-      s.posStock += qty;
-      s.cash -= qty * price;
+      const dir = a.side === 'ask' ? 1 : -1;
+      s.posStock += dir * size;
+      s.cash -= dir * size * price;
       s.decisions.push({
         round: s.round, label: 'stock',
-        action: `${qty === 1 ? 'bought' : 'sold'} at ${fmt(price)}`,
-        fair: s.env.spot, edge: qty === 1 ? s.env.spot - price : price - s.env.spot,
+        action: `${dir === 1 ? 'bought' : 'sold'} ${size} at ${fmt(price)}`,
+        fair: s.env.spot, edge: (dir === 1 ? s.env.spot - price : price - s.env.spot) * size,
         note: 'stock trade',
       });
-      feed(s, 'you', `You ${qty === 1 ? 'bought' : 'sold'} stock at ${fmt(price)}.`);
+      feed(s, 'you', `You ${dir === 1 ? 'bought' : 'sold'} ${size} stock at ${fmt(price)}.`);
       afterFill(s);
       break;
     }
