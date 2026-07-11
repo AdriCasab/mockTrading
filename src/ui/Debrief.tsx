@@ -34,7 +34,8 @@ export default function Debrief({ s, onAgain }: { s: GameState; onAgain: () => v
           {score.toFixed(2)}
         </p>
         <p className="dim small">
-          {trades.length} decisions · {pickoffs} pick-offs · {missed} missed quotes
+          {trades.length} trade{trades.length === 1 ? '' : 's'} · {pickoffs} pick-off
+          {pickoffs === 1 ? '' : 's'} · {missed} missed quote{missed === 1 ? '' : 's'}
           {Math.abs(drift) > 0.005 &&
             ` · ${drift > 0 ? '+' : ''}${drift.toFixed(2)} from market moves on open positions`}
         </p>
