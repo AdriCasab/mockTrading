@@ -22,7 +22,22 @@ npm test         # engine tests (parity identities, P&L, no-arb)
 npm run build    # production build in dist/
 ```
 
-## Install on iPhone
+## Play on iPhone
 
-Deploy `dist/` to any static host (GitHub Pages, Vercel, Netlify), open the URL in
-Safari, then Share → Add to Home Screen. It runs standalone and offline (service worker).
+**Same Wi-Fi (instant):** run `npm run lan` on the Mac, then open
+`http://<mac-ip>:4173` in Safari on the phone (the command prints the address).
+Playable immediately; no offline support (service workers need HTTPS), and some
+managed networks block device-to-device traffic.
+
+**Hosted (permanent):** push this repo to GitHub — `.github/workflows/deploy.yml`
+builds, tests, and deploys to GitHub Pages on every push to `main`. One-time setup:
+
+```sh
+gh auth login
+gh repo create mockTrading --public --source=. --push
+```
+
+then in the repo's Settings → Pages set Source to "GitHub Actions" (or run
+`gh api -X POST repos/{owner}/mockTrading/pages -f build_type=workflow`).
+Open the Pages URL in Safari, Share → Add to Home Screen: standalone app,
+works offline.
