@@ -250,6 +250,86 @@ input[type='checkbox'] {
   }
 }
 
+/* Landscape on a short screen — a phone held sideways. Fit the whole pit in the
+   viewport as two independently-scrolling columns instead of one tall stack, so
+   the board and the broker orders are visible at once without scrolling the page.
+   Scoped to the game screen (.app:not(.setup)); the setup form still scrolls. */
+@media (orientation: landscape) and (max-height: 600px) {
+  .app:not(.setup) {
+    height: 100dvh;
+    max-width: none;
+    padding: 6px 8px;
+    padding-bottom: max(6px, env(safe-area-inset-bottom));
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .app:not(.setup) .topbar {
+    margin-bottom: 6px;
+  }
+  .app:not(.setup) .armedBar {
+    padding: 6px 10px;
+    margin-bottom: 6px;
+  }
+  .app:not(.setup) .chip {
+    font-size: 12px;
+    padding: 3px 10px;
+  }
+  .app:not(.setup) .cols {
+    flex: 1;
+    min-height: 0;
+    grid-template-columns: 1fr minmax(280px, 340px);
+    gap: 8px;
+    align-items: stretch;
+  }
+  .app:not(.setup) .cols section,
+  .app:not(.setup) .cols aside {
+    order: 0;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Compaction so a full board plus the order rail fit ~390px of height. */
+  .app:not(.setup) .card {
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    border-radius: 8px;
+  }
+  .app:not(.setup) h2 {
+    margin-bottom: 4px;
+  }
+  .app:not(.setup) .hint {
+    display: none;
+  }
+  .app:not(.setup) table.chain td {
+    padding: 2px;
+  }
+  .app:not(.setup) .px {
+    min-height: 26px;
+    padding: 2px 6px;
+    font-size: 13px;
+  }
+  .app:not(.setup) .broker {
+    margin-bottom: 2px;
+  }
+  .app:not(.setup) .instLine {
+    font-size: 13.5px;
+    margin: 2px 0 6px;
+  }
+  .app:not(.setup) button.big {
+    min-height: 38px;
+    font-size: 15px;
+    margin-top: 4px;
+  }
+  .app:not(.setup) .feed {
+    font-size: 12.5px;
+  }
+  .app:not(.setup) .feed li {
+    padding: 3px 0;
+  }
+}
+
 .monthChain + .monthChain {
   margin-top: 14px;
 }
