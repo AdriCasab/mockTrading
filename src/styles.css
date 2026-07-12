@@ -28,6 +28,8 @@ body {
   max-width: 1100px;
   margin: 0 auto;
   padding: 12px;
+  padding-left: max(12px, env(safe-area-inset-left));
+  padding-right: max(12px, env(safe-area-inset-right));
   padding-bottom: max(12px, env(safe-area-inset-bottom));
 }
 
@@ -259,6 +261,8 @@ input[type='checkbox'] {
     height: 100dvh;
     max-width: none;
     padding: 6px 8px;
+    padding-left: max(8px, env(safe-area-inset-left));
+    padding-right: max(8px, env(safe-area-inset-right));
     padding-bottom: max(6px, env(safe-area-inset-bottom));
     display: flex;
     flex-direction: column;
