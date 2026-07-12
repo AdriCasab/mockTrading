@@ -8,12 +8,21 @@ import { Product, fair, fmtPx, legsText } from './products';
 
 export type Noise = 0 | 1 | 2;
 
+// Product tiers for the difficulty setting. Custom sessions pass any subset.
+export const PRODUCT_SETS = (() => {
+  const easy = ['call', 'put', 'pns', 'bw'];
+  const medium = [...easy, 'straddle', 'callSpread', 'putSpread'];
+  const hard = [...medium, 'strangle', 'fly', 'ironFly', 'box', 'rr', 'roll'];
+  return { easy, medium, hard };
+})();
+
 export type SessionConfig = {
   seed: number;
   rounds: number; // ticks of pit time
   noise: Noise;
   twoExp: boolean;
   shotClock: number; // seconds per tick, 0 = advance manually
+  products: string[]; // product kinds the brokers may quote
 };
 
 // A live order resting in the pit. side is the broker's side: a 'bid' order
@@ -264,12 +273,21 @@ export function orderArbProfit(s: GameState, o: RestingOrder): number | null {
 
 const BROKERS = ['Rich', 'Sal', 'Dana', 'Moe', 'Vera'];
 
+// The session still arcs from singles to structures, but only ever within the
+// player's enabled product set; if a phase has nothing enabled, draw from the
+// whole set instead.
 function phaseKinds(s: GameState): string[] {
   const frac = s.round / s.cfg.rounds;
-  if (frac <= 0.35) return ['call', 'put', 'bw', 'pns'];
-  if (frac <= 0.7) return ['straddle', 'strangle', 'callSpread', 'putSpread', 'call', 'put', 'bw'];
-  const kinds = ['fly', 'ironFly', 'box', 'rr', 'straddle', 'strangle'];
-  if (s.cfg.twoExp) kinds.push('roll', 'roll');
+  const tier =
+    frac <= 0.35
+      ? ['call', 'put', 'bw', 'pns']
+      : frac <= 0.7
+        ? ['straddle', 'callSpread', 'putSpread', 'call', 'put', 'bw']
+        : ['strangle', 'fly', 'ironFly', 'box', 'rr', 'straddle', 'roll', 'roll'];
+  const ok = (k: string) => s.cfg.products.includes(k) && (k !== 'roll' || s.cfg.twoExp);
+  let kinds = tier.filter(ok);
+  if (!kinds.length) kinds = s.cfg.products.filter(ok);
+  if (!kinds.length) kinds = ['call', 'put'];
   return kinds;
 }
 
@@ -504,6 +522,7 @@ function judgeTrade(s: GameState, edge: number, size = 1) {
 }
 
 export function newSession(cfg: SessionConfig): GameState {
+  if (!cfg.products?.length) cfg = { ...cfg, products: PRODUCT_SETS.medium };
   const r = mulberry32(cfg.seed || 1);
   const env = makeEnv(r, cfg.twoExp);
   const s: GameState = {

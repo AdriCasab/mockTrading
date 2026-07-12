@@ -4,7 +4,7 @@ import { makeEnv, optTheo, fwd, TICK, roundTick } from './market';
 import * as P from './products';
 import { fair, fmtPx } from './products';
 import {
-  newSession, reduce, applyFill, pnl, isFlat, isRiskless, GameState, SessionConfig, RestingOrder,
+  newSession, reduce, applyFill, pnl, isFlat, isRiskless, GameState, SessionConfig, RestingOrder, PRODUCT_SETS,
   bestBuy, bestSell, closureBuyCost, closureSellValue, orderArbProfit,
 } from './session';
 import { makeDrill } from './drill';
@@ -85,7 +85,7 @@ describe('risk reversal quoting', () => {
 });
 
 describe('closure engine', () => {
-  const base = newSession({ seed: 1, rounds: 12, noise: 1, twoExp: false, shotClock: 0 });
+  const base = newSession({ seed: 1, rounds: 12, noise: 1, twoExp: false, shotClock: 0, products: PRODUCT_SETS.hard });
   const K = 100;
   const crafted: GameState = {
     ...structuredClone(base),
@@ -131,7 +131,7 @@ describe('closure engine', () => {
 });
 
 describe('the pit', () => {
-  const cfg: SessionConfig = { seed: 123, rounds: 20, noise: 1, twoExp: true, shotClock: 0 };
+  const cfg: SessionConfig = { seed: 123, rounds: 20, noise: 1, twoExp: true, shotClock: 0, products: PRODUCT_SETS.hard };
   it('is deterministic for a given seed', () => {
     expect(JSON.stringify(newSession(cfg))).toBe(JSON.stringify(newSession(cfg)));
   });
@@ -174,7 +174,7 @@ describe('the pit', () => {
   it('make-a-market targets an empty cell whose counterpart strike is quoted', () => {
     let seen = 0;
     for (const seed of [123, 5, 999, 3344810]) {
-      let s = newSession({ seed, rounds: 24, noise: 1, twoExp: seed % 2 === 1, shotClock: 0 });
+      let s = newSession({ seed, rounds: 24, noise: 1, twoExp: seed % 2 === 1, shotClock: 0, products: PRODUCT_SETS.hard });
       while (s.phase === 'playing') {
         if (s.mm) {
           seen++;
@@ -219,7 +219,7 @@ describe('the pit', () => {
 
 describe('P&L: the canonical example', () => {
   it('nets +0.05 after the stock hedge', () => {
-    const cfg: SessionConfig = { seed: 7, rounds: 24, noise: 1, twoExp: false, shotClock: 0 };
+    const cfg: SessionConfig = { seed: 7, rounds: 24, noise: 1, twoExp: false, shotClock: 0, products: PRODUCT_SETS.hard };
     const s: GameState = newSession(cfg);
     const K = s.env.strikes[1];
     const callProd = P.call(s.env, 0, K);
@@ -230,7 +230,7 @@ describe('P&L: the canonical example', () => {
     expect(pnl(s)).toBeCloseTo(0.05, 9);
   });
   it('recognizes riskless books: conversions and boxes lock, naked legs do not', () => {
-    const cfg: SessionConfig = { seed: 11, rounds: 24, noise: 1, twoExp: false, shotClock: 0 };
+    const cfg: SessionConfig = { seed: 11, rounds: 24, noise: 1, twoExp: false, shotClock: 0, products: PRODUCT_SETS.hard };
     const s = newSession(cfg);
     const K = s.env.strikes[2];
     // conversion: buy the BW-quoted package (long call, short stock), sell the put
@@ -253,7 +253,7 @@ describe('P&L: the canonical example', () => {
     expect(isRiskless(s3)).toBe(false);
   });
   it('a riskless carry book trades out at fair, preserving pnl exactly', () => {
-    const cfg: SessionConfig = { seed: 13, rounds: 24, noise: 1, twoExp: false, shotClock: 0 };
+    const cfg: SessionConfig = { seed: 13, rounds: 24, noise: 1, twoExp: false, shotClock: 0, products: PRODUCT_SETS.hard };
     const s = newSession(cfg);
     const K = s.env.strikes[2];
     // combo (long call, short put) ten times, hedged with short stock -> long the r/c
@@ -270,7 +270,7 @@ describe('P&L: the canonical example', () => {
     expect(s2.cash + s2.banked).toBeCloseTo(before, 9);
   });
   it('trade-out is refused while the book has risk on', () => {
-    const cfg: SessionConfig = { seed: 13, rounds: 24, noise: 1, twoExp: false, shotClock: 0 };
+    const cfg: SessionConfig = { seed: 13, rounds: 24, noise: 1, twoExp: false, shotClock: 0, products: PRODUCT_SETS.hard };
     const s = newSession(cfg);
     applyFill(s, P.call(s.env, 0, s.env.strikes[2]), 10, 3.0);
     expect(isRiskless(s)).toBe(false);
@@ -278,7 +278,7 @@ describe('P&L: the canonical example', () => {
     expect(Object.keys(s2.posOpt).length).toBeGreaterThan(0);
   });
   it('a flat book has pnl = cash + banked (locked)', () => {
-    const cfg: SessionConfig = { seed: 9, rounds: 24, noise: 1, twoExp: false, shotClock: 0 };
+    const cfg: SessionConfig = { seed: 9, rounds: 24, noise: 1, twoExp: false, shotClock: 0, products: PRODUCT_SETS.hard };
     const s = newSession(cfg);
     const K = s.env.strikes[3];
     const bwProd = P.bw(s.env, 0, K);
@@ -293,7 +293,7 @@ describe('P&L: the canonical example', () => {
 
 describe('quote generation', () => {
   it('crowd quotes are tick-aligned, non-negative, bid < ask', () => {
-    const s = newSession({ seed: 55, rounds: 24, noise: 2, twoExp: true, shotClock: 0 });
+    const s = newSession({ seed: 55, rounds: 24, noise: 2, twoExp: true, shotClock: 0, products: PRODUCT_SETS.hard });
     for (const q of Object.values(s.quotes)) {
       expect(q.bid).toBeGreaterThanOrEqual(0);
       expect(q.ask).toBeGreaterThan(q.bid);
@@ -302,7 +302,7 @@ describe('quote generation', () => {
     }
   });
   it('crowd quotes respect parity within a strike (skew shared by call and put)', () => {
-    let s = newSession({ seed: 314, rounds: 24, noise: 1, twoExp: false, shotClock: 0 });
+    let s = newSession({ seed: 314, rounds: 24, noise: 1, twoExp: false, shotClock: 0, products: PRODUCT_SETS.hard });
     while (s.phase === 'playing') s = reduce(s, s.mm ? { type: 'pass' } : { type: 'tick' });
     for (const K of s.env.strikes) {
       const c = s.quotes[`0|${K}|C`];
@@ -311,6 +311,37 @@ describe('quote generation', () => {
       const cMid = (c.bid + c.ask) / 2;
       const pMid = (p.bid + p.ask) / 2;
       expect(Math.abs(cMid - pMid - (s.env.spot - K + s.env.rc[0]))).toBeLessThanOrEqual(0.051);
+    }
+  });
+});
+
+describe('difficulty product sets', () => {
+  it('easy sessions only quote singles, puts & stock, and buy-writes', () => {
+    for (const seed of [3, 44, 500]) {
+      let s = newSession({ seed, rounds: 20, noise: 1, twoExp: false, shotClock: 0, products: PRODUCT_SETS.easy });
+      while (s.phase === 'playing') {
+        for (const o of s.orders) expect(PRODUCT_SETS.easy).toContain(o.product.kind);
+        s = reduce(s, s.mm ? { type: 'pass' } : { type: 'tick' });
+      }
+    }
+  });
+  it('a custom single-product session quotes only that product', () => {
+    let s = newSession({ seed: 8, rounds: 20, noise: 1, twoExp: false, shotClock: 0, products: ['straddle'] });
+    let seenOrders = 0;
+    while (s.phase === 'playing') {
+      for (const o of s.orders) {
+        seenOrders++;
+        expect(o.product.kind).toBe('straddle');
+      }
+      s = reduce(s, s.mm ? { type: 'pass' } : { type: 'tick' });
+    }
+    expect(seenOrders).toBeGreaterThan(0);
+  });
+  it('rolls stay out of single-expiry sessions even when enabled', () => {
+    let s = newSession({ seed: 21, rounds: 20, noise: 1, twoExp: false, shotClock: 0, products: ['roll', 'straddle'] });
+    while (s.phase === 'playing') {
+      for (const o of s.orders) expect(o.product.kind).not.toBe('roll');
+      s = reduce(s, s.mm ? { type: 'pass' } : { type: 'tick' });
     }
   });
 });

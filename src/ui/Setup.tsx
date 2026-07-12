@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Noise, SessionConfig } from '../engine/session';
+import { Noise, PRODUCT_SETS, SessionConfig } from '../engine/session';
 
 export type HistEntry = { date: string; seed: number; rounds: number; score: number };
 
@@ -12,6 +12,24 @@ export function loadHistory(): HistEntry[] {
 }
 
 const randSeed = () => Math.floor(Math.random() * 900000) + 100000;
+
+type Difficulty = 'easy' | 'medium' | 'hard' | 'custom';
+
+const PRODUCT_LABELS: [string, string][] = [
+  ['call', 'Calls'],
+  ['put', 'Puts'],
+  ['pns', 'Puts & stock'],
+  ['bw', 'Buy-writes'],
+  ['straddle', 'Straddles'],
+  ['callSpread', 'Call spreads'],
+  ['putSpread', 'Put spreads'],
+  ['strangle', 'Strangles'],
+  ['fly', 'Butterflies'],
+  ['ironFly', 'Iron flies'],
+  ['box', 'Boxes'],
+  ['rr', 'Risk reversals'],
+  ['roll', 'Rolls (needs two expirations)'],
+];
 
 export default function Setup({
   onStart,
@@ -26,7 +44,13 @@ export default function Setup({
   const [twoExp, setTwoExp] = useState(false);
   const [timed, setTimed] = useState(true);
   const [secs, setSecs] = useState(25);
+  const [difficulty, setDifficulty] = useState<Difficulty>('medium');
+  const [custom, setCustom] = useState<string[]>(PRODUCT_SETS.medium);
   const hist = loadHistory();
+
+  const products = difficulty === 'custom' ? custom : PRODUCT_SETS[difficulty];
+  const toggleProduct = (k: string) =>
+    setCustom((cs) => (cs.includes(k) ? cs.filter((x) => x !== k) : [...cs, k]));
 
   return (
     <div className="app setup">
@@ -67,6 +91,30 @@ export default function Setup({
           </select>
         </label>
         <label className="row">
+          <span>Difficulty (products quoted)</span>
+          <span className="grow" />
+          <select value={difficulty} onChange={(e) => setDifficulty(e.target.value as Difficulty)}>
+            <option value="easy">Easy — singles, P&S, buy-writes</option>
+            <option value="medium">Medium — + straddles, verticals</option>
+            <option value="hard">Hard — everything</option>
+            <option value="custom">Custom…</option>
+          </select>
+        </label>
+        {difficulty === 'custom' && (
+          <div className="productGrid">
+            {PRODUCT_LABELS.map(([k, label]) => (
+              <label key={k} className={`productPick ${k === 'roll' && !twoExp ? 'dim' : ''}`}>
+                <input
+                  type="checkbox"
+                  checked={custom.includes(k)}
+                  onChange={() => toggleProduct(k)}
+                />
+                <span>{label}</span>
+              </label>
+            ))}
+          </div>
+        )}
+        <label className="row">
           <span>Two expirations (enables roll spreads)</span>
           <span className="grow" />
           <input type="checkbox" checked={twoExp} onChange={(e) => setTwoExp(e.target.checked)} />
@@ -85,7 +133,10 @@ export default function Setup({
         </label>
         <button
           className="primary big"
-          onClick={() => onStart({ seed, rounds, noise, twoExp, shotClock: timed ? secs : 0 })}
+          disabled={difficulty === 'custom' && custom.length === 0}
+          onClick={() =>
+            onStart({ seed, rounds, noise, twoExp, shotClock: timed ? secs : 0, products })
+          }
         >
           Open the pit
         </button>
