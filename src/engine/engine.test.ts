@@ -5,7 +5,7 @@ import * as P from './products';
 import { fair, fmtPx } from './products';
 import {
   newSession, reduce, applyFill, pnl, isFlat, isRiskless, GameState, SessionConfig, RestingOrder, PRODUCT_SETS,
-  bestBuy, bestSell, closureBuyCost, closureSellValue, orderArbProfit,
+  bestBuy, bestSell, closureBuyCost, closureSellValue, orderArbProfit, usd,
 } from './session';
 import { makeDrill } from './drill';
 
@@ -126,7 +126,16 @@ describe('closure engine', () => {
     const s3 = reduce(s2, { type: 'tick' });
     const d = s3.decisions.find((x) => x.note?.startsWith('missed arb'));
     expect(d).toBeDefined();
-    expect(d!.note).toContain('+0.15');
+    expect(d!.note).toContain('+$15'); // 0.15/lot on 1 lot of a 100-share contract
+  });
+});
+
+describe('dollar display', () => {
+  it('converts price units to contract dollars', () => {
+    expect(usd(0.5)).toBe('+$50');
+    expect(usd(-0.173)).toBe('-$17.30');
+    expect(usd(0.4823)).toBe('+$48.23');
+    expect(usd(0)).toBe('+$0');
   });
 });
 

@@ -88,6 +88,16 @@ export const cellKey = (m: number, K: number, right: Right) => `${m}|${K}|${righ
 const EPS = 0.011;
 const signed = (x: number) => `${x >= 0 ? '+' : ''}${x.toFixed(2)}`;
 
+// One lot is a standard 100-share contract. Prices stay quoted per share the
+// way the pit talks; money displays convert to actual dollars.
+export const CONTRACT_MULT = 100;
+export function usd(x: number): string {
+  const cents = Math.round(x * CONTRACT_MULT * 100);
+  const abs = Math.abs(cents);
+  const body = abs % 100 === 0 ? (abs / 100).toFixed(0) : (abs / 100).toFixed(2);
+  return `${cents < 0 ? '-' : '+'}$${body}`;
+}
+
 function feed(s: GameState, who: FeedItem['who'], text: string) {
   s.feed.unshift({ round: s.round, who, text });
   if (s.feed.length > 60) s.feed.pop();
@@ -377,11 +387,11 @@ function expireOrder(s: GameState, o: RestingOrder) {
   if (profit !== null && profit >= TICK - 0.001) {
     s.arbsSeen++;
     feed(s, 'game',
-      `✗ Missed: ${o.broker}'s ${o.side === 'bid' ? 'bid' : 'offer'} on the ${o.product.label} was free money (+${profit.toFixed(2)}/lot on ${o.size}).`);
+      `✗ Missed: ${o.broker}'s ${o.side === 'bid' ? 'bid' : 'offer'} on the ${o.product.label} was free money (+${profit.toFixed(2)}/lot on ${o.size} = ${usd(profit * o.size)}).`);
     s.decisions.push({
       round: s.round, label: o.product.label, action: 'let it expire',
       fair: fair(s.env, o.product), edge: 0,
-      note: `missed arb +${(profit * o.size).toFixed(2)}`,
+      note: `missed arb ${usd(profit * o.size)}`,
     });
   }
 }
@@ -497,11 +507,11 @@ export function netDelta(s: GameState): number {
 function afterFill(s: GameState) {
   if (isFlat(s)) {
     if (Math.abs(s.cash + s.banked) > 0.001)
-      feed(s, 'game', `🔒 Book flat — ${signed(s.cash + s.banked)} locked in, no risk on.`);
+      feed(s, 'game', `🔒 Book flat — ${usd(s.cash + s.banked)} locked in, no risk on.`);
     return;
   }
   if (isRiskless(s)) {
-    feed(s, 'game', `🔒 Book locked — the legs offset, ${signed(pnl(s))} riskless.`);
+    feed(s, 'game', `🔒 Book locked — the legs offset, ${usd(pnl(s))} riskless.`);
     return;
   }
   const d = netDelta(s);
@@ -515,10 +525,10 @@ function afterFill(s: GameState) {
 // the thresholds back to per-lot terms.
 function judgeTrade(s: GameState, edge: number, size = 1) {
   const perLot = edge / size;
-  if (perLot >= TICK - 0.001) feed(s, 'game', `✓ Good trade: ${signed(edge)} vs fair.`);
-  else if (perLot <= -(TICK - 0.001)) feed(s, 'game', `✗ Through fair: ${signed(edge)}.`);
+  if (perLot >= TICK - 0.001) feed(s, 'game', `✓ Good trade: ${usd(edge)} vs fair.`);
+  else if (perLot <= -(TICK - 0.001)) feed(s, 'game', `✗ Through fair: ${usd(edge)}.`);
   else if (Math.abs(perLot) <= EPS) feed(s, 'game', `— Scratch. That was right at fair.`);
-  else feed(s, 'game', `— About fair (${signed(edge)}) — inside the board's noise.`);
+  else feed(s, 'game', `— About fair (${usd(edge)}) — inside the board's noise.`);
 }
 
 export function newSession(cfg: SessionConfig): GameState {
@@ -561,12 +571,12 @@ export function reduce(prev: GameState, a: Action): GameState {
         s.arbsSeen++;
         s.arbsCaptured++;
         feed(s, 'game',
-          `✓ Arb: the legs close for ${signed(cp!)}/lot riskless (${signed(cp! * o.size)} on ${o.size}) — flatten it.`);
+          `✓ Arb: the legs close for ${signed(cp!)}/lot riskless (${usd(cp! * o.size)} on ${o.size}) — flatten it.`);
       }
       s.decisions.push({
         round: s.round, label: o.product.label,
         action: `${dir === 1 ? 'bought' : 'sold'} ${o.size} at ${fmtPx(o.product, o.price)} (${o.broker})`,
-        fair: f, edge, note: isArb ? `arb ${signed(cp! * o.size)} available` : undefined,
+        fair: f, edge, note: isArb ? `arb ${usd(cp! * o.size)} available` : undefined,
       });
       feed(s, 'you',
         `You ${dir === 1 ? 'bought' : 'sold'} the ${o.product.label} ×${o.size} at ${fmtPx(o.product, o.price)}.`);
@@ -593,7 +603,7 @@ export function reduce(prev: GameState, a: Action): GameState {
         const q = mkQuote(s.env, leg.m, leg.K, leg.right);
         s.quotes[key] = q;
         feed(s, 'crowd', `Crowd corrects it to ${fmt(q.bid)} at ${fmt(q.ask)}.`);
-        feed(s, 'game', `✗ Picked off: ${signed(edge)}. Your bid was through fair.`);
+        feed(s, 'game', `✗ Picked off: ${usd(edge)}. Your bid was through fair.`);
       } else if (ask < f - eps) {
         const sz = pick(r, [5, 10, 20]);
         applyFill(s, product, -sz, ask);
@@ -603,7 +613,7 @@ export function reduce(prev: GameState, a: Action): GameState {
         const q = mkQuote(s.env, leg.m, leg.K, leg.right);
         s.quotes[key] = q;
         feed(s, 'crowd', `Crowd corrects it to ${fmt(q.bid)} at ${fmt(q.ask)}.`);
-        feed(s, 'game', `✗ Picked off: ${signed(edge)}. Your offer was through fair.`);
+        feed(s, 'game', `✗ Picked off: ${usd(edge)}. Your offer was through fair.`);
       } else {
         s.quotes[key] = { bid, ask }; // your market is now the market
         if (r.next() < 0.5) {
@@ -618,7 +628,7 @@ export function reduce(prev: GameState, a: Action): GameState {
             feed(s, 'inst', `He hits your bid at ${fmt(bid)}, ${sz} up.`);
           }
           note = 'inventory from your market';
-          feed(s, 'game', `✓ Market held: ${signed(edge)} earned at your price — inventory to manage.`);
+          feed(s, 'game', `✓ Market held: ${usd(edge)} earned at your price — inventory to manage.`);
         } else {
           feed(s, 'inst', `"Fair enough." Your market stands on the board.`);
           feed(s, 'game', `✓ Market held — fair was inside your quote.`);

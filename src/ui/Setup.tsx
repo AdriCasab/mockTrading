@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Noise, PRODUCT_SETS, SessionConfig } from '../engine/session';
+import { Noise, PRODUCT_SETS, SessionConfig, usd } from '../engine/session';
 
 export type HistEntry = { date: string; seed: number; rounds: number; score: number };
 
@@ -152,10 +152,7 @@ export default function Setup({
               <span className="dim">{h.date}</span>
               <span className="dim">seed {h.seed}</span>
               <span className="grow" />
-              <span className={h.score >= 0 ? 'pos' : 'neg'}>
-                {h.score >= 0 ? '+' : ''}
-                {h.score.toFixed(2)}
-              </span>
+              <span className={h.score >= 0 ? 'pos' : 'neg'}>{usd(h.score)}</span>
             </div>
           ))}
         </div>

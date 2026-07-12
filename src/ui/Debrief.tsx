@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { GameState, isFlat, isRiskless, pnl } from '../engine/session';
+import { GameState, isFlat, isRiskless, pnl, usd } from '../engine/session';
 import { HistEntry, loadHistory } from './Setup';
 
 export default function Debrief({ s, onAgain }: { s: GameState; onAgain: () => void }) {
@@ -30,10 +30,7 @@ export default function Debrief({ s, onAgain }: { s: GameState; onAgain: () => v
       <h1>Debrief</h1>
       <div className="card scoreCard">
         <p className="dim">Net edge after hedging</p>
-        <p className={`score ${score >= 0 ? 'pos' : 'neg'}`}>
-          {score >= 0 ? '+' : ''}
-          {score.toFixed(2)}
-        </p>
+        <p className={`score ${score >= 0 ? 'pos' : 'neg'}`}>{usd(score)}</p>
         <p className="dim small">
           {s.arbsSeen} arb{s.arbsSeen === 1 ? '' : 's'} surfaced · {s.arbsCaptured} captured ·{' '}
           {missed} missed · {pickoffs} pick-off{pickoffs === 1 ? '' : 's'}
@@ -41,8 +38,7 @@ export default function Debrief({ s, onAgain }: { s: GameState; onAgain: () => v
         <p className="dim small">
           {trades.length} trade{trades.length === 1 ? '' : 's'} ·{' '}
           {flat ? 'you finished flat — everything locked' : 'you finished with open risk'}
-          {Math.abs(drift) > 0.005 &&
-            ` · ${drift > 0 ? '+' : ''}${drift.toFixed(2)} from market moves on open positions`}
+          {Math.abs(drift) > 0.005 && ` · ${usd(drift)} from market moves on open positions`}
         </p>
       </div>
       <div className="card">
@@ -67,8 +63,7 @@ export default function Debrief({ s, onAgain }: { s: GameState; onAgain: () => v
                   <td>{d.action}</td>
                   <td>{d.fair.toFixed(2)}</td>
                   <td className={d.edge > 0.005 ? 'pos' : d.edge < -0.005 ? 'neg' : 'dim'}>
-                    {d.edge >= 0 ? '+' : ''}
-                    {d.edge.toFixed(2)}
+                    {usd(d.edge)}
                   </td>
                   <td className="dim">{d.note ?? ''}</td>
                 </tr>

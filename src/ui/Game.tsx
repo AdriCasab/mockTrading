@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Action, GameState, isFlat, isRiskless, netDelta, pnl } from '../engine/session';
+import { Action, GameState, isFlat, isRiskless, netDelta, pnl, usd } from '../engine/session';
 import { fmt, stockBid, stockAsk } from '../engine/market';
 import Chain from './Chain';
 import OrderRail from './OrderRail';
@@ -72,10 +72,7 @@ export default function Game({ s, dispatch }: { s: GameState; dispatch: (a: Acti
           <span className={`chip ${flat || locked ? 'pos' : ''}`}>
             {flat ? '🔒 flat' : locked ? '🔒 locked' : `Δ ${d >= 0 ? '+' : ''}${d.toFixed(2)}`}
           </span>
-          <span className={`chip ${score >= 0 ? 'pos' : 'neg'}`}>
-            {score >= 0 ? '+' : ''}
-            {score.toFixed(2)}
-          </span>
+          <span className={`chip ${score >= 0 ? 'pos' : 'neg'}`}>{usd(score)}</span>
           {s.cfg.shotClock ? (
             <span className={`chip ${left <= 3 ? 'neg' : ''}`}>next tick {Math.max(left, 0)}s</span>
           ) : (
