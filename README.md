@@ -1,6 +1,6 @@
 # Mock Trading
 
-A SIG-style options mock trading trainer. A five-strike options board starts sparse; an
+An ptions mock trading trainer. A five-strike options board starts sparse; an
 instructor quotes markets in singles and structures (buy-writes, puts & stock, straddles,
 strangles, spreads, flies, iron flies, boxes, risk reversals, rolls) and you take, leave,
 or make markets. Score is net edge after hedging, marked against hidden theoretical values.
