@@ -61,20 +61,29 @@ describe('structure identities', () => {
     for (const K2 of env2.strikes)
       expect(fair(env2, P.roll(env2, K2))).toBeCloseTo(env2.rc[1] - env2.rc[0], 9);
   });
-  it('combo = synthetic stock: fair is S + r/c at every strike and month', () => {
+  it('combo = C - P, the parity quantity: fair is (S - K) + r/c at every strike', () => {
     for (const env of [env1, env2]) {
       for (let m = 0; m < env.months.length; m++) {
         for (const K2 of env.strikes) {
-          expect(fair(env, P.combo(env, m, K2))).toBeCloseTo(env.spot + env.rc[m], 9);
+          const f = fair(env, P.combo(env, m, K2));
+          expect(f).toBeCloseTo(env.spot - K2 + env.rc[m], 9);
+          // combo + strike = the same synthetic stock at every line
+          expect(f + K2).toBeCloseTo(env.spot + env.rc[m], 9);
         }
       }
     }
+  });
+  it('combo quotes are net premium, puts-over when negative', () => {
+    const c = P.combo(env1, 0, env1.strikes[2]);
+    expect(fmtPx(c, 0.15)).toBe('0.15');
+    expect(fmtPx(c, -4.7)).toBe('4.70 puts over');
   });
   it('a combo hedged with stock is riskless and trades out at fair', () => {
     const cfg: SessionConfig = { seed: 31, rounds: 24, noise: 1, twoExp: false, shotClock: 0, products: PRODUCT_SETS.easy };
     const s = newSession(cfg);
     const K2 = s.env.strikes[1];
-    applyFill(s, P.combo(s.env, 0, K2), 10, s.env.spot + 0.2); // paid 0.10 over fair
+    const comboProd = P.combo(s.env, 0, K2);
+    applyFill(s, comboProd, 10, fair(s.env, comboProd) + 0.02); // paid 0.02 over fair
     s.posStock -= 10;
     s.cash += 10 * (s.env.spot - 0.1);
     expect(isRiskless(s)).toBe(true);

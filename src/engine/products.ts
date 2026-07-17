@@ -9,7 +9,9 @@ export type Product = {
   kind: string;
   label: string;
   legs: Leg[];
-  over?: boolean; // quoted "puts over / calls over", price may be signed
+  // Signed-price products quote positive with a direction word: `pos` when the
+  // internal price is >= 0, `neg` below ('' = no qualifier needed).
+  over?: { pos: string; neg: string };
 };
 
 export function fair(env: Env, p: Product): number {
@@ -25,7 +27,8 @@ export function fair(env: Env, p: Product): number {
 // Price display: over-style products are always positive with a direction.
 export function fmtPx(p: Product, x: number): string {
   if (!p.over) return x.toFixed(2);
-  return `${Math.abs(x).toFixed(2)} ${x >= 0 ? 'puts over' : 'calls over'}`;
+  const word = x >= 0 ? p.over.pos : p.over.neg;
+  return `${Math.abs(x).toFixed(2)}${word ? ` ${word}` : ''}`;
 }
 
 // Plain-language legs from the perspective of buying (sign=1) or selling (sign=-1)
@@ -109,17 +112,20 @@ export const box = (env: Env, m: number, K1: number, K2: number): Product => ({
 // Long the downside put, short the upside call. Fair = P(K-5) - C(K+5), signed;
 // quoted positive with "puts over" / "calls over".
 export const rr = (env: Env, m: number, K: number): Product => ({
-  kind: 'rr', label: `${mo(env, m)} ${K - 5}/${K + 5} risk reversal`, over: true,
+  kind: 'rr', label: `${mo(env, m)} ${K - 5}/${K + 5} risk reversal`,
+  over: { pos: 'puts over', neg: 'calls over' },
   legs: [opt(m, K - 5, 'P', 1), opt(m, K + 5, 'C', -1)],
 });
 
-// Combo quoted vs strike: K + C - P = synthetic stock. Under constant r/c its
-// fair is S + r/c at EVERY strike — the same synthetic stock hides at each
-// line, so a mispriced combo locks against real stock (conversion/reversal)
-// or against another strike's combo (a box).
+// Combo: C - P, quoted as the net premium ("0.15 for the 100 combo"). Fair is
+// exactly the parity quantity (S - K) + r/c, so combo + K = synthetic stock at
+// every strike — a mispriced combo locks against real stock (conversion /
+// reversal) or another strike's combo (a box). Above the forward the price
+// goes negative and quotes pit-style: "4.70 puts over".
 export const combo = (env: Env, m: number, K: number): Product => ({
   kind: 'combo', label: `${mo(env, m)} ${K} combo`,
-  legs: [opt(m, K, 'C', 1), opt(m, K, 'P', -1), { kind: 'cash', amt: K }],
+  legs: [opt(m, K, 'C', 1), opt(m, K, 'P', -1)],
+  over: { pos: '', neg: 'puts over' },
 });
 
 // Jelly roll: long back-month combo, short front-month combo. Fair = rc2 - rc1.
