@@ -10,7 +10,7 @@ export type Noise = 0 | 1 | 2;
 
 // Product tiers for the difficulty setting. Custom sessions pass any subset.
 export const PRODUCT_SETS = (() => {
-  const easy = ['call', 'put', 'pns', 'bw'];
+  const easy = ['call', 'put', 'pns', 'bw', 'combo'];
   const medium = [...easy, 'straddle', 'callSpread', 'putSpread'];
   const hard = [...medium, 'strangle', 'fly', 'ironFly', 'box', 'rr', 'roll'];
   return { easy, medium, hard };
@@ -37,6 +37,7 @@ export type RestingOrder = {
   size: number;
   ttl: number; // ticks until the broker pulls it
   planted: boolean; // constructed to be arbitrage-able (for debrief stats)
+  born: number; // tick the order (or its arb, after an improvement) appeared
 };
 
 export type MMRequest = { product: Product; fair: number; ttl: number };
@@ -65,6 +66,8 @@ export type GameState = {
   nextId: number;
   arbsSeen: number;
   arbsCaptured: number;
+  captureTicks: number[]; // how many ticks each captured arb had been resting
+  recentLabels: string[]; // last few quoted products, for variety
   feed: FeedItem[];
   decisions: Decision[];
   posOpt: Record<string, number>;
@@ -170,6 +173,7 @@ function buildProduct(s: GameState, r: Rng, kind: string): Product | null {
     }
     case 'bw': return P.bw(env, m, pick(r, env.strikes));
     case 'pns': return P.pns(env, m, pick(r, env.strikes));
+    case 'combo': return P.combo(env, m, pick(r, env.strikes));
     case 'straddle': return P.straddle(env, m, pick(r, inner));
     case 'strangle': return P.strangle(env, m, pick(r, inner));
     case 'callSpread': return P.callSpread(env, m, pick(r, lower));
@@ -290,10 +294,10 @@ function phaseKinds(s: GameState): string[] {
   const frac = s.round / s.cfg.rounds;
   const tier =
     frac <= 0.35
-      ? ['call', 'put', 'bw', 'pns']
+      ? ['call', 'put', 'bw', 'pns', 'combo']
       : frac <= 0.7
-        ? ['straddle', 'callSpread', 'putSpread', 'call', 'put', 'bw']
-        : ['strangle', 'fly', 'ironFly', 'box', 'rr', 'straddle', 'roll', 'roll'];
+        ? ['straddle', 'callSpread', 'putSpread', 'call', 'put', 'bw', 'combo']
+        : ['strangle', 'fly', 'ironFly', 'box', 'rr', 'straddle', 'roll', 'roll', 'combo'];
   const ok = (k: string) => s.cfg.products.includes(k) && (k !== 'roll' || s.cfg.twoExp);
   let kinds = tier.filter(ok);
   if (!kinds.length) kinds = s.cfg.products.filter(ok);
@@ -307,6 +311,9 @@ function mkOrderProduct(s: GameState, r: Rng): { product: Product; f: number } |
     const product = buildProduct(s, r, pick(r, kinds));
     if (!product) continue;
     if (!productAnchored(s, product)) continue;
+    // Variety: avoid re-quoting something recently in the pit, unless the
+    // product space is too small to avoid it.
+    if (tries < 15 && s.recentLabels.includes(product.label)) continue;
     const f = fair(s.env, product);
     if (!product.over && f < 0.15) continue;
     return { product, f };
@@ -338,8 +345,11 @@ function pushOrder(s: GameState, r: Rng, planted: boolean): boolean {
     id: s.nextId++, broker: pick(r, BROKERS), product: pf.product, side, price,
     size: pick(r, [5, 10, 10, 20]),
     ttl: 2 + Math.floor(r.next() * (planted ? 2 : 3)), planted,
+    born: s.round,
   };
   s.orders.push(o);
+  s.recentLabels.push(o.product.label);
+  if (s.recentLabels.length > 6) s.recentLabels.shift();
   feed(s, 'inst', orderFeedText(o));
   return true;
 }
@@ -374,7 +384,10 @@ function improveOrder(s: GameState, r: Rng) {
   }
   if (!o.product.over && next! < TICK) return;
   o.price = next!;
-  if (throughFair) o.planted = true;
+  if (throughFair) {
+    o.planted = true;
+    o.born = s.round; // the arb exists from the improvement, not the order
+  }
   o.ttl = Math.max(o.ttl, 2);
   feed(s, 'inst', o.side === 'bid'
     ? `${o.broker} improves — ${fmtPx(o.product, o.price)} bid now for the ${o.product.label}!`
@@ -537,7 +550,7 @@ export function newSession(cfg: SessionConfig): GameState {
   const env = makeEnv(r, cfg.twoExp);
   const s: GameState = {
     cfg, env, rng: 0, quotes: {}, round: 0, orders: [], mm: null, nextId: 1,
-    arbsSeen: 0, arbsCaptured: 0, feed: [], decisions: [],
+    arbsSeen: 0, arbsCaptured: 0, captureTicks: [], recentLabels: [], feed: [], decisions: [],
     posOpt: {}, posStock: 0, cash: 0, banked: 0, phase: 'playing',
   };
   for (let i = 0; i < 3; i++) crowdFill(s, r, false);
@@ -570,6 +583,7 @@ export function reduce(prev: GameState, a: Action): GameState {
       if (isArb) {
         s.arbsSeen++;
         s.arbsCaptured++;
+        s.captureTicks.push(Math.max(0, s.round - o.born));
         feed(s, 'game',
           `✓ Arb: the legs close for ${signed(cp!)}/lot riskless (${usd(cp! * o.size)} on ${o.size}) — flatten it.`);
       }

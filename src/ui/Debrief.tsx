@@ -5,6 +5,9 @@ import { HistEntry, loadHistory } from './Setup';
 export default function Debrief({ s, onAgain }: { s: GameState; onAgain: () => void }) {
   const score = pnl(s);
   const saved = useRef(false);
+  const avgCapture = s.captureTicks.length
+    ? s.captureTicks.reduce((a, b) => a + b, 0) / s.captureTicks.length
+    : null;
 
   useEffect(() => {
     if (saved.current) return;
@@ -14,9 +17,10 @@ export default function Debrief({ s, onAgain }: { s: GameState; onAgain: () => v
       seed: s.cfg.seed,
       rounds: s.cfg.rounds,
       score: Math.round(score * 100) / 100,
+      ...(avgCapture !== null ? { capture: Math.round(avgCapture * 10) / 10 } : {}),
     };
     localStorage.setItem('mt-history', JSON.stringify([entry, ...loadHistory()].slice(0, 20)));
-  }, [s, score]);
+  }, [s, score, avgCapture]);
 
   const trades = s.decisions.filter((d) => d.edge !== 0 || d.action.includes('at'));
   const pickoffs = s.decisions.filter((d) => d.note?.includes('picked off')).length;
@@ -34,6 +38,8 @@ export default function Debrief({ s, onAgain }: { s: GameState; onAgain: () => v
         <p className="dim small">
           {s.arbsSeen} arb{s.arbsSeen === 1 ? '' : 's'} surfaced · {s.arbsCaptured} captured ·{' '}
           {missed} missed · {pickoffs} pick-off{pickoffs === 1 ? '' : 's'}
+          {avgCapture !== null &&
+            ` · struck in ${avgCapture.toFixed(1)} tick${avgCapture === 1 ? '' : 's'} on average`}
         </p>
         <p className="dim small">
           {trades.length} trade{trades.length === 1 ? '' : 's'} ·{' '}

@@ -1,7 +1,13 @@
 import { useState } from 'react';
 import { Noise, PRODUCT_SETS, SessionConfig, usd } from '../engine/session';
 
-export type HistEntry = { date: string; seed: number; rounds: number; score: number };
+export type HistEntry = {
+  date: string;
+  seed: number;
+  rounds: number;
+  score: number;
+  capture?: number; // avg ticks-to-capture, when any arbs were caught
+};
 
 export function loadHistory(): HistEntry[] {
   try {
@@ -20,6 +26,7 @@ const PRODUCT_LABELS: [string, string][] = [
   ['put', 'Puts'],
   ['pns', 'Puts & stock'],
   ['bw', 'Buy-writes'],
+  ['combo', 'Combos (synthetic stock)'],
   ['straddle', 'Straddles'],
   ['callSpread', 'Call spreads'],
   ['putSpread', 'Put spreads'],
@@ -152,6 +159,9 @@ export default function Setup({
               <span className="dim">{h.date}</span>
               <span className="dim">seed {h.seed}</span>
               <span className="grow" />
+              {h.capture !== undefined && (
+                <span className="dim">{h.capture.toFixed(1)}t to strike</span>
+              )}
               <span className={h.score >= 0 ? 'pos' : 'neg'}>{usd(h.score)}</span>
             </div>
           ))}

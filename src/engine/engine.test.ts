@@ -61,6 +61,28 @@ describe('structure identities', () => {
     for (const K2 of env2.strikes)
       expect(fair(env2, P.roll(env2, K2))).toBeCloseTo(env2.rc[1] - env2.rc[0], 9);
   });
+  it('combo = synthetic stock: fair is S + r/c at every strike and month', () => {
+    for (const env of [env1, env2]) {
+      for (let m = 0; m < env.months.length; m++) {
+        for (const K2 of env.strikes) {
+          expect(fair(env, P.combo(env, m, K2))).toBeCloseTo(env.spot + env.rc[m], 9);
+        }
+      }
+    }
+  });
+  it('a combo hedged with stock is riskless and trades out at fair', () => {
+    const cfg: SessionConfig = { seed: 31, rounds: 24, noise: 1, twoExp: false, shotClock: 0, products: PRODUCT_SETS.easy };
+    const s = newSession(cfg);
+    const K2 = s.env.strikes[1];
+    applyFill(s, P.combo(s.env, 0, K2), 10, s.env.spot + 0.2); // paid 0.10 over fair
+    s.posStock -= 10;
+    s.cash += 10 * (s.env.spot - 0.1);
+    expect(isRiskless(s)).toBe(true);
+    const before = pnl(s);
+    const s2 = reduce(s, { type: 'unwind' });
+    expect(isFlat(s2)).toBe(true);
+    expect(pnl(s2)).toBeCloseTo(before, 9);
+  });
 });
 
 describe('no-arbitrage of generated theos', () => {
@@ -104,7 +126,7 @@ describe('closure engine', () => {
     expect(closureBuyCost(crafted, straddle)).toBeCloseTo(3.2 + 3.2, 9);
     expect(closureSellValue(crafted, straddle)).toBeCloseTo(3.0 + 2.8, 9);
     const order: RestingOrder = {
-      id: 99, broker: 'T', product: straddle, side: 'bid', price: 6.55, size: 1, ttl: 1, planted: false,
+      id: 99, broker: 'T', product: straddle, side: 'bid', price: 6.55, size: 1, ttl: 1, planted: false, born: 0,
     };
     const withOrder = { ...crafted, orders: [order] };
     expect(orderArbProfit(withOrder, order)).toBeCloseTo(6.55 - 6.4, 9);
@@ -112,15 +134,15 @@ describe('closure engine', () => {
   it('detects a direct pair arb between two brokers on the same product', () => {
     const straddle = P.straddle(crafted.env, 0, K);
     // Pair route (6.70 vs 6.30 = 0.40) beats the board closure (6.70 - 6.40 = 0.30).
-    const bidO: RestingOrder = { id: 1, broker: 'A', product: straddle, side: 'bid', price: 6.7, size: 1, ttl: 2, planted: false };
-    const askO: RestingOrder = { id: 2, broker: 'B', product: straddle, side: 'ask', price: 6.3, size: 1, ttl: 2, planted: false };
+    const bidO: RestingOrder = { id: 1, broker: 'A', product: straddle, side: 'bid', price: 6.7, size: 1, ttl: 2, planted: false, born: 0 };
+    const askO: RestingOrder = { id: 2, broker: 'B', product: straddle, side: 'ask', price: 6.3, size: 1, ttl: 2, planted: false, born: 0 };
     const s2 = { ...crafted, orders: [bidO, askO] };
     expect(orderArbProfit(s2, bidO)).toBeCloseTo(0.4, 9);
   });
   it('flags a missed arb when the order expires', () => {
     const straddle = P.straddle(crafted.env, 0, K);
     const order: RestingOrder = {
-      id: 7, broker: 'T', product: straddle, side: 'bid', price: 6.55, size: 1, ttl: 1, planted: false,
+      id: 7, broker: 'T', product: straddle, side: 'bid', price: 6.55, size: 1, ttl: 1, planted: false, born: 0,
     };
     const s2: GameState = { ...structuredClone(crafted), orders: [order], round: 3 };
     const s3 = reduce(s2, { type: 'tick' });
@@ -320,6 +342,32 @@ describe('quote generation', () => {
       const cMid = (c.bid + c.ask) / 2;
       const pMid = (p.bid + p.ask) / 2;
       expect(Math.abs(cMid - pMid - (s.env.spot - K + s.env.rc[0]))).toBeLessThanOrEqual(0.051);
+    }
+  });
+});
+
+describe('speed stats and variety', () => {
+  it('capturing an arb records how many ticks it had been resting', () => {
+    let s = newSession({ seed: 123, rounds: 20, noise: 1, twoExp: false, shotClock: 0, products: PRODUCT_SETS.hard });
+    while (s.phase === 'playing' && !s.orders.some((o) => o.planted)) {
+      s = reduce(s, s.mm ? { type: 'pass' } : { type: 'tick' });
+    }
+    expect(s.phase).toBe('playing');
+    const o = s.orders.find((x) => x.planted)!;
+    const expected = s.round - o.born;
+    s = reduce(s, { type: 'order', id: o.id });
+    expect(s.captureTicks).toHaveLength(1);
+    expect(s.captureTicks[0]).toBe(Math.max(0, expected));
+    expect(s.arbsCaptured).toBe(1);
+  });
+  it('the pit avoids re-quoting a product that is already resting', () => {
+    for (const seed of [123, 7, 909]) {
+      let s = newSession({ seed, rounds: 24, noise: 1, twoExp: false, shotClock: 0, products: PRODUCT_SETS.hard });
+      while (s.phase === 'playing') {
+        const labels = s.orders.map((o) => o.product.label);
+        expect(new Set(labels).size, `duplicate resting orders: ${labels.join(', ')}`).toBe(labels.length);
+        s = reduce(s, s.mm ? { type: 'pass' } : { type: 'tick' });
+      }
     }
   });
 });

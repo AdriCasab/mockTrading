@@ -113,6 +113,15 @@ export const rr = (env: Env, m: number, K: number): Product => ({
   legs: [opt(m, K - 5, 'P', 1), opt(m, K + 5, 'C', -1)],
 });
 
+// Combo quoted vs strike: K + C - P = synthetic stock. Under constant r/c its
+// fair is S + r/c at EVERY strike — the same synthetic stock hides at each
+// line, so a mispriced combo locks against real stock (conversion/reversal)
+// or against another strike's combo (a box).
+export const combo = (env: Env, m: number, K: number): Product => ({
+  kind: 'combo', label: `${mo(env, m)} ${K} combo`,
+  legs: [opt(m, K, 'C', 1), opt(m, K, 'P', -1), { kind: 'cash', amt: K }],
+});
+
 // Jelly roll: long back-month combo, short front-month combo. Fair = rc2 - rc1.
 export const roll = (env: Env, K: number): Product => ({
   kind: 'roll', label: `${K} ${env.months[0]}/${env.months[1]} roll`,
