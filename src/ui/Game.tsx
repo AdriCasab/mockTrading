@@ -18,7 +18,10 @@ export default function Game({ s, dispatch }: { s: GameState; dispatch: (a: Acti
   useEffect(() => {
     if (!s.cfg.shotClock) return;
     setLeft(s.cfg.shotClock);
-    const id = setInterval(() => setLeft((x) => x - 1), 1000);
+    const id = setInterval(() => {
+      if (document.hidden) return; // the pit clock freezes while you're away
+      setLeft((x) => x - 1);
+    }, 1000);
     return () => clearInterval(id);
   }, [s.round, s.cfg.shotClock]);
 

@@ -412,6 +412,40 @@ describe('difficulty product sets', () => {
   });
 });
 
+describe('the closing bell', () => {
+  const cfg: SessionConfig = { seed: 77, rounds: 12, noise: 1, twoExp: false, shotClock: 0, products: PRODUCT_SETS.easy };
+  it('force-flattens open risk at market prices', () => {
+    let s = newSession(cfg);
+    for (let i = 0; i < 6 && s.phase === 'playing'; i++) s = reduce(s, s.mm ? { type: 'pass' } : { type: 'tick' });
+    applyFill(s, P.call(s.env, 0, s.env.strikes[2]), 10, 3.0);
+    while (s.phase === 'playing') s = reduce(s, s.mm ? { type: 'pass' } : { type: 'tick' });
+    expect(isFlat(s)).toBe(true);
+    const bell = s.decisions.find((d) => d.label === 'closing bell')!;
+    expect(bell.action).toBe('forced flat at market');
+    expect(bell.edge).toBeLessThanOrEqual(0.000001); // liquidation never beats the mark
+    expect(pnl(s)).toBeCloseTo(s.cash + s.banked, 9); // fully realized
+  });
+  it('redeems a riskless carry book at fair, costlessly', () => {
+    let s = newSession(cfg);
+    const K = s.env.strikes[2];
+    applyFill(s, P.combo(s.env, 0, K), 10, 1.0);
+    s.posStock -= 10;
+    s.cash += 10 * s.env.spot;
+    expect(isRiskless(s)).toBe(true);
+    const before = pnl(s);
+    while (s.phase === 'playing') s = reduce(s, s.mm ? { type: 'pass' } : { type: 'tick' });
+    expect(isFlat(s)).toBe(true);
+    const bell = s.decisions.find((d) => d.label === 'closing bell')!;
+    expect(bell.action).toBe('carry redeemed at fair');
+    expect(pnl(s)).toBeCloseTo(before, 9);
+  });
+  it('a flat book hears no bell', () => {
+    let s = newSession(cfg);
+    while (s.phase === 'playing') s = reduce(s, s.mm ? { type: 'pass' } : { type: 'tick' });
+    expect(s.decisions.find((d) => d.label === 'closing bell')).toBeUndefined();
+  });
+});
+
 describe('parity drill', () => {
   it('generates clean, consistent questions', () => {
     const qs = makeDrill(77, 15);
@@ -419,6 +453,39 @@ describe('parity drill', () => {
     for (const q of qs) {
       expect(q.answer).toBeGreaterThan(0);
       expect(Math.abs(q.answer * 100 - Math.round(q.answer * 100))).toBeLessThan(1e-6);
+    }
+  });
+  it('easy drills stay in the parity family', () => {
+    const qs = makeDrill(5, 40, 'easy');
+    for (const q of qs)
+      expect(/call\?|put\?|buy-write\?|puts & stock\?|combo\?/.test(q.prompt), q.prompt).toBe(true);
+  });
+  it('hard drills include structure identities with exact answers', () => {
+    const qs = makeDrill(99, 80, 'hard');
+    const boxes = qs.filter((q) => q.prompt.includes('box?'));
+    expect(boxes.length).toBeGreaterThan(0);
+    for (const q of boxes) {
+      const m = /the (\d+)\/(\d+) box/.exec(q.prompt)!;
+      expect(q.answer).toBe(Number(m[2]) - Number(m[1]));
+    }
+    const putSpreads = qs.filter((q) => q.prompt.includes('put spread?'));
+    expect(putSpreads.length).toBeGreaterThan(0);
+    for (const q of putSpreads) {
+      const cs = Number(/call spread is (\d+\.\d+)/.exec(q.prompt)![1]);
+      expect(q.answer).toBeCloseTo(5 - cs, 9);
+    }
+    const flyIrons = qs.filter((q) => /\d+\/\d+\/\d+ fly is/.test(q.prompt));
+    expect(flyIrons.length).toBeGreaterThan(0);
+    for (const q of flyIrons) {
+      const fly = Number(/fly is (\d+\.\d+)/.exec(q.prompt)![1]);
+      expect(q.answer).toBeCloseTo(5 - fly, 9);
+    }
+    const combos = qs.filter((q) => q.prompt.includes('combo?'));
+    for (const q of combos) {
+      const S = Number(/Stock (\d+\.\d+)/.exec(q.prompt)![1]);
+      const rc = Number(/r\/c (\d+\.\d+)/.exec(q.prompt)![1]);
+      const K = Number(/the (\d+) combo/.exec(q.prompt)![1]);
+      expect(q.answer).toBeCloseTo(S - K + rc, 9);
     }
   });
   it('put -> call answers satisfy parity', () => {

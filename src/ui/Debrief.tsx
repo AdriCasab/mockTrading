@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { GameState, isFlat, isRiskless, pnl, usd } from '../engine/session';
+import { GameState, pnl, usd } from '../engine/session';
 import { HistEntry, loadHistory } from './Setup';
 
 export default function Debrief({ s, onAgain }: { s: GameState; onAgain: () => void }) {
@@ -27,7 +27,7 @@ export default function Debrief({ s, onAgain }: { s: GameState; onAgain: () => v
   const missed = s.decisions.filter((d) => d.note?.startsWith('missed arb')).length;
   const edgeSum = s.decisions.reduce((a, d) => a + d.edge, 0);
   const drift = score - edgeSum;
-  const flat = isFlat(s) || isRiskless(s);
+  const bell = s.decisions.find((d) => d.label === 'closing bell');
 
   return (
     <div className="app setup">
@@ -43,7 +43,11 @@ export default function Debrief({ s, onAgain }: { s: GameState; onAgain: () => v
         </p>
         <p className="dim small">
           {trades.length} trade{trades.length === 1 ? '' : 's'} ·{' '}
-          {flat ? 'you finished flat — everything locked' : 'you finished with open risk'}
+          {!bell
+            ? 'you went into the bell flat — everything realized'
+            : bell.action.includes('carry')
+              ? 'carry book redeemed at the bell'
+              : `you carried risk into the bell (${usd(bell.edge)} to get flat)`}
           {Math.abs(drift) > 0.005 && ` · ${usd(drift)} from market moves on open positions`}
         </p>
       </div>

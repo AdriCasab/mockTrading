@@ -43,7 +43,7 @@ export default function Setup({
   onDrill,
 }: {
   onStart: (cfg: SessionConfig) => void;
-  onDrill: () => void;
+  onDrill: (level: 'easy' | 'medium' | 'hard') => void;
 }) {
   const [seed, setSeed] = useState(randSeed());
   const [rounds, setRounds] = useState(24);
@@ -147,8 +147,11 @@ export default function Setup({
         >
           Open the pit
         </button>
-        <button className="big" onClick={onDrill}>
-          Parity drill — 15 questions against the clock
+        <button
+          className="big"
+          onClick={() => onDrill(difficulty === 'custom' ? 'hard' : difficulty)}
+        >
+          Parity drill — 15 questions at {difficulty === 'custom' ? 'hard' : difficulty} level
         </button>
       </div>
       {hist.length > 0 && (

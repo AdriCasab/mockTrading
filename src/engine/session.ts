@@ -436,11 +436,55 @@ function lapseMM(s: GameState) {
   s.mm = null;
 }
 
+// The bell: nothing stays open. A riskless book redeems at fair (it's a cash
+// equivalent, same as the trade-out button); anything with risk on gets
+// liquidated through the closure engine at real prices — crossing every
+// spread is the cost of carrying risk into the close.
+function closeAtTheBell(s: GameState) {
+  if (isFlat(s)) return;
+  if (isRiskless(s)) {
+    for (const [key, q] of Object.entries(s.posOpt)) {
+      const [m, K, right] = key.split('|');
+      s.cash += q * optTheo(s.env, Number(m), Number(K), right as Right);
+    }
+    s.posOpt = {};
+    s.cash += s.posStock * s.env.spot;
+    s.posStock = 0;
+    feed(s, 'game', `🔔 The bell. Your carry book redeems at fair.`);
+    s.decisions.push({
+      round: s.round, label: 'closing bell', action: 'carry redeemed at fair',
+      fair: 0, edge: 0,
+    });
+    return;
+  }
+  let cost = 0; // liquidation cost vs theo marks
+  for (const [key, q] of Object.entries(s.posOpt)) {
+    const [m, K, right] = key.split('|') as [string, string, Right];
+    const theo = optTheo(s.env, Number(m), Number(K), right);
+    const px = (q > 0 ? bestSell(s, Number(m), Number(K), right) : bestBuy(s, Number(m), Number(K), right)) ?? theo;
+    s.cash += q * px;
+    cost += q * (px - theo);
+  }
+  s.posOpt = {};
+  if (s.posStock) {
+    const px = s.posStock > 0 ? stockBid(s.env) : stockAsk(s.env);
+    s.cash += s.posStock * px;
+    cost += s.posStock * (px - s.env.spot);
+    s.posStock = 0;
+  }
+  feed(s, 'game', `🔔 The bell — you carried risk into the close: ${usd(cost)} to get flat at market.`);
+  s.decisions.push({
+    round: s.round, label: 'closing bell', action: 'forced flat at market',
+    fair: 0, edge: cost, note: 'open risk at the close',
+  });
+}
+
 function advanceTick(s: GameState, r: Rng) {
   s.round++;
   if (s.round > s.cfg.rounds) {
     for (const o of [...s.orders]) expireOrder(s, o);
     if (s.mm) lapseMM(s);
+    closeAtTheBell(s);
     s.phase = 'debrief';
     return;
   }
