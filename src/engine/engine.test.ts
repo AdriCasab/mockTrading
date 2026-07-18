@@ -489,13 +489,56 @@ describe('parity drill', () => {
     }
   });
   it('put -> call answers satisfy parity', () => {
-    const qs = makeDrill(123, 40).filter((q) => q.prompt.includes('Fair for the') && q.prompt.includes('call?'));
+    const qs = makeDrill(123, 60).filter((q) => q.prompt.includes('call?') && / put is /.test(q.prompt));
+    expect(qs.length).toBeGreaterThan(0);
     for (const q of qs) {
       const S = Number(/Stock (\d+\.\d+)/.exec(q.prompt)![1]);
       const rc = Number(/r\/c (\d+\.\d+)/.exec(q.prompt)![1]);
       const K = Number(/The (\d+) put/.exec(q.prompt)![1]);
       const put = Number(/put is (\d+\.\d+)/.exec(q.prompt)![1]);
       expect(q.answer).toBeCloseTo(put + (S - K) + rc, 9);
+    }
+  });
+  it('reverse conversions recover the option from the package', () => {
+    const qs = makeDrill(321, 120, 'easy');
+    const pnsToPut = qs.filter((q) => q.prompt.includes('puts & stock is') && q.prompt.includes('put?'));
+    expect(pnsToPut.length).toBeGreaterThan(0);
+    for (const q of pnsToPut) {
+      const S = Number(/Stock (\d+\.\d+)/.exec(q.prompt)![1]);
+      const K = Number(/The (\d+) puts & stock/.exec(q.prompt)![1]);
+      const pns = Number(/puts & stock is (\d+\.\d+)/.exec(q.prompt)![1]);
+      expect(q.answer).toBeCloseTo(pns - (S - K), 9); // r/c is a distractor here
+    }
+    const bwToCall = qs.filter((q) => q.prompt.includes('buy-write is') && q.prompt.includes('call?'));
+    expect(bwToCall.length).toBeGreaterThan(0);
+    for (const q of bwToCall) {
+      const S = Number(/Stock (\d+\.\d+)/.exec(q.prompt)![1]);
+      const K = Number(/The (\d+) buy-write/.exec(q.prompt)![1]);
+      const bw = Number(/buy-write is (\d+\.\d+)/.exec(q.prompt)![1]);
+      expect(q.answer).toBeCloseTo(bw + (S - K), 9);
+    }
+    const bwToPut = qs.filter((q) => q.prompt.includes('buy-write is') && q.prompt.includes('put?'));
+    expect(bwToPut.length).toBeGreaterThan(0);
+    for (const q of bwToPut) {
+      const rc = Number(/r\/c (\d+\.\d+)/.exec(q.prompt)![1]);
+      const bw = Number(/buy-write is (\d+\.\d+)/.exec(q.prompt)![1]);
+      expect(q.answer).toBeCloseTo(bw - rc, 9); // stock is a distractor here
+    }
+    const pnsToCall = qs.filter((q) => q.prompt.includes('puts & stock is') && q.prompt.includes('call?'));
+    expect(pnsToCall.length).toBeGreaterThan(0);
+    for (const q of pnsToCall) {
+      const rc = Number(/r\/c (\d+\.\d+)/.exec(q.prompt)![1]);
+      const pns = Number(/puts & stock is (\d+\.\d+)/.exec(q.prompt)![1]);
+      expect(q.answer).toBeCloseTo(pns + rc, 9);
+    }
+  });
+  it('BW + P&S = straddle in the medium drill', () => {
+    const qs = makeDrill(55, 120, 'medium').filter((q) => q.prompt.includes('straddle?') && q.prompt.includes('buy-write'));
+    expect(qs.length).toBeGreaterThan(0);
+    for (const q of qs) {
+      const bw = Number(/buy-write is (\d+\.\d+)/.exec(q.prompt)![1]);
+      const pns = Number(/puts & stock is (\d+\.\d+)/.exec(q.prompt)![1]);
+      expect(q.answer).toBeCloseTo(bw + pns, 9);
     }
   });
 });

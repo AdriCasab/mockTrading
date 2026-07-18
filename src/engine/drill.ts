@@ -41,6 +41,43 @@ const qCallToPns: Gen = (r) => {
   if (b.callPx < b.rc + 0.05) return null;
   return { prompt: `${b.base} The ${b.K} call is ${b.callPx.toFixed(2)}. Fair for the ${b.K} puts & stock?`, answer: r2(b.callPx - b.rc) };
 };
+// Reverse conversions: given the package, recover the option. The prompts
+// always show both stock and r/c — part of the drill is knowing which one
+// matters (r/c is a distractor for P&S -> put, stock for BW -> put).
+const qPnsToPut: Gen = (r) => {
+  const b = parityBase(r);
+  const pns = r2(b.putPx + b.S - b.K);
+  if (pns < 0.05) return null;
+  return { prompt: `${b.base} The ${b.K} puts & stock is ${pns.toFixed(2)}. Fair for the ${b.K} put?`, answer: b.putPx };
+};
+const qBwToCall: Gen = (r) => {
+  const b = parityBase(r);
+  if (b.callPx < 0.05) return null;
+  const bw = r2(b.putPx + b.rc); // = callPx - (S - K)
+  return { prompt: `${b.base} The ${b.K} buy-write is ${bw.toFixed(2)}. Fair for the ${b.K} call?`, answer: b.callPx };
+};
+const qBwToPut: Gen = (r) => {
+  const b = parityBase(r);
+  const bw = r2(b.putPx + b.rc);
+  return { prompt: `${b.base} The ${b.K} buy-write is ${bw.toFixed(2)}. Fair for the ${b.K} put?`, answer: b.putPx };
+};
+const qPnsToCall: Gen = (r) => {
+  const b = parityBase(r);
+  if (b.callPx < b.rc + 0.05) return null;
+  const pns = r2(b.callPx - b.rc);
+  return { prompt: `${b.base} The ${b.K} puts & stock is ${pns.toFixed(2)}. Fair for the ${b.K} call?`, answer: b.callPx };
+};
+// BW + P&S = (P + r/c) + (C - r/c) = the straddle: the carries cancel.
+const qBwPnsToStraddle: Gen = (r) => {
+  const b = parityBase(r);
+  if (b.callPx < b.rc + 0.05) return null;
+  const bw = r2(b.putPx + b.rc);
+  const pns = r2(b.callPx - b.rc);
+  return {
+    prompt: `The ${b.K} buy-write is ${bw.toFixed(2)}, the ${b.K} puts & stock is ${pns.toFixed(2)}. Fair for the ${b.K} straddle?`,
+    answer: r2(b.callPx + b.putPx),
+  };
+};
 const qCombo: Gen = (r) => {
   const K = 5 * (12 + Math.floor(r.next() * 21));
   const S = roundTick(K + 0.5 + r.next() * 7.5); // above the strike -> positive combo
@@ -99,11 +136,16 @@ const qBox: Gen = (r) => {
   };
 };
 
+const PARITY_FAMILY = [
+  qPutToCall, qCallToPut, qPutToBw, qCallToPns,
+  qPnsToPut, qBwToCall, qBwToPut, qPnsToCall, qCombo,
+];
+
 const GENS: Record<DrillLevel, Gen[]> = {
-  easy: [qPutToCall, qCallToPut, qPutToBw, qCallToPns, qCombo],
-  medium: [qPutToCall, qCallToPut, qPutToBw, qCallToPns, qCombo, qSpreadPair, qStradComboToPut],
+  easy: PARITY_FAMILY,
+  medium: [...PARITY_FAMILY, qSpreadPair, qStradComboToPut, qBwPnsToStraddle],
   hard: [
-    qPutToCall, qCallToPut, qPutToBw, qCallToPns, qCombo, qSpreadPair, qStradComboToPut,
+    ...PARITY_FAMILY, qSpreadPair, qStradComboToPut, qBwPnsToStraddle,
     qFlyToIronFly, qStradStrangleToIronFly, qBox,
   ],
 };
