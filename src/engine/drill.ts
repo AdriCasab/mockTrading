@@ -154,6 +154,14 @@ const f2 = (x: number) => x.toFixed(2);
 const mm = (m: Mkt) => `${f2(m.bid)} @ ${f2(m.ask)}`;
 const side = (r: Rng): 'buy' | 'sell' => (r.next() < 0.5 ? 'buy' : 'sell');
 
+// Two phrasings for the same number — "where can you buy X?" and "what's your
+// ask on X?" are identical: your ask is where you can source it, your bid is
+// where you can lay it off. Alternating drills that equivalence.
+const question = (r: Rng, sd: 'buy' | 'sell', label: string) =>
+  r.next() < 0.5
+    ? `Where can you ${sd} the ${label}?`
+    : `What's your ${sd === 'buy' ? 'ask' : 'bid'} on the ${label}?`;
+
 function mktAround(r: Rng, mid: number, minBid = 0.05): Mkt | null {
   const w = pick(r, [0.1, 0.2]);
   const bid = roundTick(mid - w / 2);
@@ -176,7 +184,7 @@ const mPutToCall: Gen = (r) => {
     ? r2(put.ask + (b.stk.ask - b.K) + b.rc)
     : r2(put.bid + (b.stk.bid - b.K) + b.rc);
   if (answer < 0.05) return null;
-  return { prompt: `${b.mbase} The ${b.K} puts are ${mm(put)}. Where can you ${sd} the ${b.K} call?`, answer };
+  return { prompt: `${b.mbase} The ${b.K} puts are ${mm(put)}. ${question(r, sd, `${b.K} call`)}`, answer };
 };
 const mCallToPut: Gen = (r) => {
   const b = marketBase(r);
@@ -188,7 +196,7 @@ const mCallToPut: Gen = (r) => {
     ? r2(call.ask - (b.stk.bid - b.K) - b.rc) // buy call, SELL stock at the bid
     : r2(call.bid - (b.stk.ask - b.K) - b.rc);
   if (answer < 0.05) return null;
-  return { prompt: `${b.mbase} The ${b.K} calls are ${mm(call)}. Where can you ${sd} the ${b.K} put?`, answer };
+  return { prompt: `${b.mbase} The ${b.K} calls are ${mm(call)}. ${question(r, sd, `${b.K} put`)}`, answer };
 };
 const mBwToPut: Gen = (r) => {
   const b = marketBase(r);
@@ -196,7 +204,7 @@ const mBwToPut: Gen = (r) => {
   if (!bw) return null;
   const sd = side(r);
   const answer = sd === 'buy' ? r2(bw.ask - b.rc) : r2(bw.bid - b.rc); // stock is a distractor
-  return { prompt: `${b.mbase} The ${b.K} buy-write is ${mm(bw)}. Where can you ${sd} the ${b.K} put?`, answer };
+  return { prompt: `${b.mbase} The ${b.K} buy-write is ${mm(bw)}. ${question(r, sd, `${b.K} put`)}`, answer };
 };
 const mPnsToCall: Gen = (r) => {
   const b = marketBase(r);
@@ -205,7 +213,7 @@ const mPnsToCall: Gen = (r) => {
   if (!pns) return null;
   const sd = side(r);
   const answer = sd === 'buy' ? r2(pns.ask + b.rc) : r2(pns.bid + b.rc); // stock is a distractor
-  return { prompt: `${b.mbase} The ${b.K} puts & stock is ${mm(pns)}. Where can you ${sd} the ${b.K} call?`, answer };
+  return { prompt: `${b.mbase} The ${b.K} puts & stock is ${mm(pns)}. ${question(r, sd, `${b.K} call`)}`, answer };
 };
 const mPnsToPut: Gen = (r) => {
   const b = marketBase(r);
@@ -216,7 +224,7 @@ const mPnsToPut: Gen = (r) => {
     ? r2(pns.ask - (b.stk.bid - b.K)) // buy the package, SELL the stock at the bid
     : r2(pns.bid - (b.stk.ask - b.K));
   if (answer < 0.05) return null;
-  return { prompt: `${b.mbase} The ${b.K} puts & stock is ${mm(pns)}. Where can you ${sd} the ${b.K} put?`, answer };
+  return { prompt: `${b.mbase} The ${b.K} puts & stock is ${mm(pns)}. ${question(r, sd, `${b.K} put`)}`, answer };
 };
 const mBwToCall: Gen = (r) => {
   const b = marketBase(r);
@@ -227,7 +235,7 @@ const mBwToCall: Gen = (r) => {
     ? r2(bw.ask + (b.stk.ask - b.K)) // same-side stock
     : r2(bw.bid + (b.stk.bid - b.K));
   if (answer < 0.05) return null;
-  return { prompt: `${b.mbase} The ${b.K} buy-write is ${mm(bw)}. Where can you ${sd} the ${b.K} call?`, answer };
+  return { prompt: `${b.mbase} The ${b.K} buy-write is ${mm(bw)}. ${question(r, sd, `${b.K} call`)}`, answer };
 };
 const mStockToCombo: Gen = (r) => {
   const K = 5 * (12 + Math.floor(r.next() * 21));
@@ -237,7 +245,7 @@ const mStockToCombo: Gen = (r) => {
   const sd = side(r);
   const answer = sd === 'buy' ? r2(stk.ask - K + rc) : r2(stk.bid - K + rc);
   if (answer < 0.05) return null;
-  return { prompt: `Stock ${mm(stk)}, r/c ${rc.toFixed(2)}. Where can you ${sd} the ${K} combo?`, answer };
+  return { prompt: `Stock ${mm(stk)}, r/c ${rc.toFixed(2)}. ${question(r, sd, `${K} combo`)}`, answer };
 };
 const mSpreadFlip: Gen = (r) => {
   const K1 = 5 * (12 + Math.floor(r.next() * 20));
@@ -246,7 +254,7 @@ const mSpreadFlip: Gen = (r) => {
   const sd = side(r);
   const answer = sd === 'buy' ? r2(5 - cs.bid) : r2(5 - cs.ask); // opposite side
   return {
-    prompt: `The ${K1}/${K1 + 5} call spread is ${mm(cs)}. Where can you ${sd} the ${K1}/${K1 + 5} put spread?`,
+    prompt: `The ${K1}/${K1 + 5} call spread is ${mm(cs)}. ${question(r, sd, `${K1}/${K1 + 5} put spread`)}`,
     answer,
   };
 };
@@ -259,7 +267,7 @@ const mBwPnsToStraddle: Gen = (r) => {
   const sd = side(r);
   const answer = sd === 'buy' ? r2(bw.ask + pns.ask) : r2(bw.bid + pns.bid);
   return {
-    prompt: `The ${b.K} buy-write is ${mm(bw)}, the ${b.K} puts & stock is ${mm(pns)}. Where can you ${sd} the ${b.K} straddle?`,
+    prompt: `The ${b.K} buy-write is ${mm(bw)}, the ${b.K} puts & stock is ${mm(pns)}. ${question(r, sd, `${b.K} straddle`)}`,
     answer,
   };
 };
@@ -270,7 +278,7 @@ const mFlyToIron: Gen = (r) => {
   const sd = side(r);
   const answer = sd === 'buy' ? r2(5 - fly.bid) : r2(5 - fly.ask); // opposite side
   return {
-    prompt: `The ${K - 5}/${K}/${K + 5} fly is ${mm(fly)}. Where can you ${sd} the ${K} iron fly?`,
+    prompt: `The ${K - 5}/${K}/${K + 5} fly is ${mm(fly)}. ${question(r, sd, `${K} iron fly`)}`,
     answer,
   };
 };
@@ -286,14 +294,103 @@ const mStradStrangleToIron: Gen = (r) => {
     : r2(strad.bid - strangle.ask);
   if (answer < 0.05) return null;
   return {
-    prompt: `The ${K} straddle is ${mm(strad)}, the ${K - 5}/${K + 5} strangle is ${mm(strangle)}. Where can you ${sd} the ${K} iron fly?`,
+    prompt: `The ${K} straddle is ${mm(strad)}, the ${K - 5}/${K + 5} strangle is ${mm(strangle)}. ${question(r, sd, `${K} iron fly`)}`,
     answer,
+  };
+};
+
+// --- additional fair-value variety ---
+
+function comboBase(r: Rng) {
+  const K = 5 * (12 + Math.floor(r.next() * 21));
+  const S = roundTick(K + 0.5 + r.next() * 7.5); // above the strike -> positive combo
+  const rc = pick(r, [0.05, 0.1, 0.15, 0.2]);
+  return { K, S, rc, combo: r2(S - K + rc) };
+}
+
+const qComboPutToCall: Gen = (r) => {
+  const c = comboBase(r);
+  const putPx = roundTick(0.3 + r.next() * 4);
+  return {
+    prompt: `The ${c.K} combo is ${f2(c.combo)}, the ${c.K} put is ${f2(putPx)}. Fair for the ${c.K} call?`,
+    answer: r2(c.combo + putPx),
+  };
+};
+// The options market implies the stock: S = K + combo - r/c.
+const qComboToStock: Gen = (r) => {
+  const c = comboBase(r);
+  return {
+    prompt: `The ${c.K} combo is ${f2(c.combo)}, r/c ${f2(c.rc)}. Fair for the stock?`,
+    answer: c.S,
+  };
+};
+const qPsToCs: Gen = (r) => {
+  const K1 = 5 * (12 + Math.floor(r.next() * 20));
+  const ps = roundTick(0.5 + r.next() * 4);
+  return {
+    prompt: `The ${K1}/${K1 + 5} put spread is ${f2(ps)}. Fair for the ${K1}/${K1 + 5} call spread?`,
+    answer: r2(5 - ps),
+  };
+};
+const qStradPutToCall: Gen = (r) => {
+  const K = 5 * (12 + Math.floor(r.next() * 21));
+  const putPx = roundTick(0.3 + r.next() * 4);
+  const callPx = roundTick(0.3 + r.next() * 4);
+  return {
+    prompt: `The ${K} straddle is ${f2(r2(putPx + callPx))}, the ${K} put is ${f2(putPx)}. Fair for the ${K} call?`,
+    answer: callPx,
+  };
+};
+const qStradCallToPut: Gen = (r) => {
+  const K = 5 * (12 + Math.floor(r.next() * 21));
+  const putPx = roundTick(0.3 + r.next() * 4);
+  const callPx = roundTick(0.3 + r.next() * 4);
+  return {
+    prompt: `The ${K} straddle is ${f2(r2(putPx + callPx))}, the ${K} call is ${f2(callPx)}. Fair for the ${K} put?`,
+    answer: putPx,
+  };
+};
+const qIronToFly: Gen = (r) => {
+  const K = 5 * (13 + Math.floor(r.next() * 19));
+  const fly = roundTick(0.3 + r.next() * 1.5);
+  return {
+    prompt: `The ${K} iron fly is ${f2(r2(5 - fly))}. Fair for the ${K - 5}/${K}/${K + 5} fly?`,
+    answer: fly,
+  };
+};
+// Trick question: no arithmetic at all — the call fly IS the put fly.
+const qCallFlyPutFly: Gen = (r) => {
+  const K = 5 * (13 + Math.floor(r.next() * 19));
+  const fly = roundTick(0.3 + r.next() * 1.5);
+  return {
+    prompt: `The ${K - 5}/${K}/${K + 5} call fly is ${f2(fly)}. Fair for the ${K - 5}/${K}/${K + 5} put fly?`,
+    answer: fly,
+  };
+};
+const qRr: Gen = (r) => {
+  const K = 5 * (13 + Math.floor(r.next() * 19));
+  const callPx = roundTick(0.3 + r.next() * 3);
+  const rrVal = roundTick(0.1 + r.next() * 2);
+  const putPx = r2(callPx + rrVal);
+  return {
+    prompt: `The ${K - 5} put is ${f2(putPx)}, the ${K + 5} call is ${f2(callPx)}. Fair for the ${K - 5}/${K + 5} risk reversal, puts over?`,
+    answer: rrVal,
+  };
+};
+const qCombosToRoll: Gen = (r) => {
+  const K = 5 * (12 + Math.floor(r.next() * 21));
+  const julCombo = roundTick(0.3 + r.next() * 5);
+  const roll = roundTick(0.05 + r.next() * 0.45);
+  return {
+    prompt: `The Jul ${K} combo is ${f2(julCombo)}, the Aug ${K} combo is ${f2(r2(julCombo + roll))}. Fair for the ${K} Jul/Aug roll?`,
+    answer: roll,
   };
 };
 
 const PARITY_FAMILY = [
   qPutToCall, qCallToPut, qPutToBw, qCallToPns,
   qPnsToPut, qBwToCall, qBwToPut, qPnsToCall, qCombo,
+  qComboPutToCall, qComboToStock,
 ];
 
 const MARKET_FAMILY = [
@@ -308,10 +405,15 @@ const GENS_MARKET: Record<DrillLevel, Gen[]> = {
 
 const GENS: Record<DrillLevel, Gen[]> = {
   easy: PARITY_FAMILY,
-  medium: [...PARITY_FAMILY, qSpreadPair, qStradComboToPut, qBwPnsToStraddle],
+  medium: [
+    ...PARITY_FAMILY, qSpreadPair, qPsToCs, qStradComboToPut,
+    qStradPutToCall, qStradCallToPut, qBwPnsToStraddle,
+  ],
   hard: [
-    ...PARITY_FAMILY, qSpreadPair, qStradComboToPut, qBwPnsToStraddle,
-    qFlyToIronFly, qStradStrangleToIronFly, qBox,
+    ...PARITY_FAMILY, qSpreadPair, qPsToCs, qStradComboToPut,
+    qStradPutToCall, qStradCallToPut, qBwPnsToStraddle,
+    qFlyToIronFly, qIronToFly, qCallFlyPutFly, qStradStrangleToIronFly,
+    qRr, qCombosToRoll, qBox,
   ],
 };
 

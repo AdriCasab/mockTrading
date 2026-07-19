@@ -458,7 +458,7 @@ describe('parity drill', () => {
   it('easy drills stay in the parity family', () => {
     const qs = makeDrill(5, 40, 'easy');
     for (const q of qs)
-      expect(/call\?|put\?|buy-write\?|puts & stock\?|combo\?/.test(q.prompt), q.prompt).toBe(true);
+      expect(/call\?|put\?|buy-write\?|puts & stock\?|combo\?|stock\?/.test(q.prompt), q.prompt).toBe(true);
   });
   it('hard drills include structure identities with exact answers', () => {
     const qs = makeDrill(99, 80, 'hard');
@@ -489,7 +489,9 @@ describe('parity drill', () => {
     }
   });
   it('put -> call answers satisfy parity', () => {
-    const qs = makeDrill(123, 60).filter((q) => q.prompt.includes('call?') && / put is /.test(q.prompt));
+    const qs = makeDrill(123, 60).filter(
+      (q) => q.prompt.includes('call?') && / put is /.test(q.prompt) && q.prompt.includes('Stock')
+    );
     expect(qs.length).toBeGreaterThan(0);
     for (const q of qs) {
       const S = Number(/Stock (\d+\.\d+)/.exec(q.prompt)![1]);
@@ -543,6 +545,55 @@ describe('parity drill', () => {
   });
 });
 
+describe('fair drill variety', () => {
+  it('implied stock, iron->fly, put fly = call fly, RR, and rolls all check out', () => {
+    const qs = makeDrill(31, 200, 'hard');
+    const stockQs = qs.filter((q) => q.prompt.includes('Fair for the stock?'));
+    expect(stockQs.length).toBeGreaterThan(0);
+    for (const q of stockQs) {
+      const combo = Number(/combo is (\d+\.\d+)/.exec(q.prompt)![1]);
+      const rc = Number(/r\/c (\d+\.\d+)/.exec(q.prompt)![1]);
+      const K = Number(/The (\d+) combo/.exec(q.prompt)![1]);
+      expect(q.answer).toBeCloseTo(K + combo - rc, 9);
+    }
+    const ironToFly = qs.filter((q) => q.prompt.includes('iron fly is'));
+    expect(ironToFly.length).toBeGreaterThan(0);
+    for (const q of ironToFly) {
+      const iron = Number(/iron fly is (\d+\.\d+)/.exec(q.prompt)![1]);
+      expect(q.answer).toBeCloseTo(5 - iron, 9);
+    }
+    const flyEq = qs.filter((q) => q.prompt.includes('call fly is'));
+    expect(flyEq.length).toBeGreaterThan(0);
+    for (const q of flyEq)
+      expect(q.answer).toBeCloseTo(Number(/call fly is (\d+\.\d+)/.exec(q.prompt)![1]), 9);
+    const rrs = qs.filter((q) => q.prompt.includes('risk reversal'));
+    expect(rrs.length).toBeGreaterThan(0);
+    for (const q of rrs) {
+      const put = Number(/put is (\d+\.\d+)/.exec(q.prompt)![1]);
+      const call = Number(/call is (\d+\.\d+)/.exec(q.prompt)![1]);
+      expect(q.answer).toBeCloseTo(put - call, 9);
+    }
+    const rolls = qs.filter((q) => q.prompt.includes('Jul/Aug roll?'));
+    expect(rolls.length).toBeGreaterThan(0);
+    for (const q of rolls) {
+      const jul = Number(/Jul \d+ combo is (\d+\.\d+)/.exec(q.prompt)![1]);
+      const aug = Number(/Aug \d+ combo is (\d+\.\d+)/.exec(q.prompt)![1]);
+      expect(q.answer).toBeCloseTo(aug - jul, 9);
+    }
+  });
+  it('straddle minus one option recovers the other in the medium drill', () => {
+    const qs = makeDrill(41, 200, 'medium').filter(
+      (q) => q.prompt.includes('straddle is') && / (put|call) is /.test(q.prompt)
+    );
+    expect(qs.length).toBeGreaterThan(0);
+    for (const q of qs) {
+      const strad = Number(/straddle is (\d+\.\d+)/.exec(q.prompt)![1]);
+      const given = Number(/ (?:put|call) is (\d+\.\d+)/.exec(q.prompt)![1]);
+      expect(q.answer).toBeCloseTo(strad - given, 9);
+    }
+  });
+});
+
 describe('market drill', () => {
   const parseMkt = (re: RegExp, p: string) => {
     const m = re.exec(p)!;
@@ -556,7 +607,7 @@ describe('market drill', () => {
       for (const q of qs) {
         expect(q.answer).toBeGreaterThan(0);
         expect(Math.abs(q.answer * 100 - Math.round(q.answer * 100))).toBeLessThan(1e-6);
-        expect(/Where can you (buy|sell)/.test(q.prompt), q.prompt).toBe(true);
+        expect(/Where can you (buy|sell)|What's your (bid|ask)/.test(q.prompt), q.prompt).toBe(true);
       }
     }
   });
@@ -570,7 +621,7 @@ describe('market drill', () => {
       const put = parseMkt(/puts are (\d+\.\d+) @ (\d+\.\d+)/, q.prompt);
       const rc = num(/r\/c (\d+\.\d+)/, q.prompt);
       const K = num(/The (\d+) puts are/, q.prompt);
-      if (q.prompt.includes('you buy')) expect(q.answer).toBeCloseTo(put.ask + (stk.ask - K) + rc, 9);
+      if (/you buy|your ask/.test(q.prompt)) expect(q.answer).toBeCloseTo(put.ask + (stk.ask - K) + rc, 9);
       else expect(q.answer).toBeCloseTo(put.bid + (stk.bid - K) + rc, 9);
     }
   });
@@ -583,7 +634,7 @@ describe('market drill', () => {
       const stk = parseMkt(/Stock (\d+\.\d+) @ (\d+\.\d+)/, q.prompt);
       const pns = parseMkt(/puts & stock is (\d+\.\d+) @ (\d+\.\d+)/, q.prompt);
       const K = num(/The (\d+) puts & stock/, q.prompt);
-      if (q.prompt.includes('you buy')) expect(q.answer).toBeCloseTo(pns.ask - (stk.bid - K), 9);
+      if (/you buy|your ask/.test(q.prompt)) expect(q.answer).toBeCloseTo(pns.ask - (stk.bid - K), 9);
       else expect(q.answer).toBeCloseTo(pns.bid - (stk.ask - K), 9);
     }
   });
@@ -594,7 +645,7 @@ describe('market drill', () => {
     expect(qs.length).toBeGreaterThan(0);
     for (const q of qs) {
       const cs = parseMkt(/call spread is (\d+\.\d+) @ (\d+\.\d+)/, q.prompt);
-      if (q.prompt.includes('you buy')) expect(q.answer).toBeCloseTo(5 - cs.bid, 9);
+      if (/you buy|your ask/.test(q.prompt)) expect(q.answer).toBeCloseTo(5 - cs.bid, 9);
       else expect(q.answer).toBeCloseTo(5 - cs.ask, 9);
     }
   });
@@ -606,7 +657,7 @@ describe('market drill', () => {
     for (const q of qs) {
       const strad = parseMkt(/straddle is (\d+\.\d+) @ (\d+\.\d+)/, q.prompt);
       const strangle = parseMkt(/strangle is (\d+\.\d+) @ (\d+\.\d+)/, q.prompt);
-      if (q.prompt.includes('you buy')) expect(q.answer).toBeCloseTo(strad.ask - strangle.bid, 9);
+      if (/you buy|your ask/.test(q.prompt)) expect(q.answer).toBeCloseTo(strad.ask - strangle.bid, 9);
       else expect(q.answer).toBeCloseTo(strad.bid - strangle.ask, 9);
     }
   });
