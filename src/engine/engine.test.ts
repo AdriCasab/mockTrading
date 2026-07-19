@@ -543,6 +543,75 @@ describe('parity drill', () => {
   });
 });
 
+describe('market drill', () => {
+  const parseMkt = (re: RegExp, p: string) => {
+    const m = re.exec(p)!;
+    return { bid: Number(m[1]), ask: Number(m[2]) };
+  };
+  const num = (re: RegExp, p: string) => Number(re.exec(p)![1]);
+  it('answers are positive, exact to the cent, and always ask a side', () => {
+    for (const level of ['easy', 'medium', 'hard'] as const) {
+      const qs = makeDrill(11, 60, level, 'market');
+      expect(qs).toHaveLength(60);
+      for (const q of qs) {
+        expect(q.answer).toBeGreaterThan(0);
+        expect(Math.abs(q.answer * 100 - Math.round(q.answer * 100))).toBeLessThan(1e-6);
+        expect(/Where can you (buy|sell)/.test(q.prompt), q.prompt).toBe(true);
+      }
+    }
+  });
+  it('buying the call from the put market crosses same-side stock', () => {
+    const qs = makeDrill(21, 200, 'easy', 'market').filter(
+      (q) => q.prompt.includes('puts are') && q.prompt.includes('call?')
+    );
+    expect(qs.length).toBeGreaterThan(0);
+    for (const q of qs) {
+      const stk = parseMkt(/Stock (\d+\.\d+) @ (\d+\.\d+)/, q.prompt);
+      const put = parseMkt(/puts are (\d+\.\d+) @ (\d+\.\d+)/, q.prompt);
+      const rc = num(/r\/c (\d+\.\d+)/, q.prompt);
+      const K = num(/The (\d+) puts are/, q.prompt);
+      if (q.prompt.includes('you buy')) expect(q.answer).toBeCloseTo(put.ask + (stk.ask - K) + rc, 9);
+      else expect(q.answer).toBeCloseTo(put.bid + (stk.bid - K) + rc, 9);
+    }
+  });
+  it('buying the put from puts & stock flips the stock side', () => {
+    const qs = makeDrill(22, 300, 'easy', 'market').filter(
+      (q) => q.prompt.includes('puts & stock is') && q.prompt.includes('put?')
+    );
+    expect(qs.length).toBeGreaterThan(0);
+    for (const q of qs) {
+      const stk = parseMkt(/Stock (\d+\.\d+) @ (\d+\.\d+)/, q.prompt);
+      const pns = parseMkt(/puts & stock is (\d+\.\d+) @ (\d+\.\d+)/, q.prompt);
+      const K = num(/The (\d+) puts & stock/, q.prompt);
+      if (q.prompt.includes('you buy')) expect(q.answer).toBeCloseTo(pns.ask - (stk.bid - K), 9);
+      else expect(q.answer).toBeCloseTo(pns.bid - (stk.ask - K), 9);
+    }
+  });
+  it('the put spread side comes from the opposite call spread side', () => {
+    const qs = makeDrill(23, 300, 'medium', 'market').filter(
+      (q) => q.prompt.includes('call spread is') && q.prompt.includes('put spread?')
+    );
+    expect(qs.length).toBeGreaterThan(0);
+    for (const q of qs) {
+      const cs = parseMkt(/call spread is (\d+\.\d+) @ (\d+\.\d+)/, q.prompt);
+      if (q.prompt.includes('you buy')) expect(q.answer).toBeCloseTo(5 - cs.bid, 9);
+      else expect(q.answer).toBeCloseTo(5 - cs.ask, 9);
+    }
+  });
+  it('the iron fly crosses the straddle and strangle on opposite sides', () => {
+    const qs = makeDrill(24, 300, 'hard', 'market').filter(
+      (q) => q.prompt.includes('strangle is') && q.prompt.includes('iron fly?')
+    );
+    expect(qs.length).toBeGreaterThan(0);
+    for (const q of qs) {
+      const strad = parseMkt(/straddle is (\d+\.\d+) @ (\d+\.\d+)/, q.prompt);
+      const strangle = parseMkt(/strangle is (\d+\.\d+) @ (\d+\.\d+)/, q.prompt);
+      if (q.prompt.includes('you buy')) expect(q.answer).toBeCloseTo(strad.ask - strangle.bid, 9);
+      else expect(q.answer).toBeCloseTo(strad.bid - strangle.ask, 9);
+    }
+  });
+});
+
 describe('forward convention', () => {
   it('forward = spot + r/c so parity is the class convention', () => {
     expect(fwd(env2, 0)).toBeCloseTo(env2.spot + 0.1, 9);

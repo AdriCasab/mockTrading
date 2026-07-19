@@ -1,12 +1,12 @@
 import { useState } from 'react';
 import { Action, GameState, newSession, reduce } from '../engine/session';
-import { DrillLevel } from '../engine/drill';
+import { DrillLevel, DrillStyle } from '../engine/drill';
 import Setup from './Setup';
 import Game from './Game';
 import Debrief from './Debrief';
 import Drill from './Drill';
 
-type Screen = { name: 'setup' } | { name: 'drill'; level: DrillLevel };
+type Screen = { name: 'setup' } | { name: 'drill'; level: DrillLevel; style: DrillStyle };
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>({ name: 'setup' });
@@ -18,11 +18,11 @@ export default function App() {
     return <Game s={game} dispatch={dispatch} />;
   }
   if (screen.name === 'drill')
-    return <Drill level={screen.level} onExit={() => setScreen({ name: 'setup' })} />;
+    return <Drill level={screen.level} style={screen.style} onExit={() => setScreen({ name: 'setup' })} />;
   return (
     <Setup
       onStart={(cfg) => setGame(newSession(cfg))}
-      onDrill={(level) => setScreen({ name: 'drill', level })}
+      onDrill={(level, style) => setScreen({ name: 'drill', level, style })}
     />
   );
 }

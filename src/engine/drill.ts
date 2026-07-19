@@ -5,8 +5,13 @@ import { roundTick } from './market';
 // the difficulty tiers: easy is the parity family, medium adds spread and
 // straddle identities, hard adds fly/iron-fly and box identities. Every answer
 // is positive (the iPhone decimal pad has no minus key) and lands on the cent.
+//
+// Two styles: 'fair' asks for a single fair value; 'market' gives bid @ ask
+// markets and asks where you can buy or sell the counterpart — the drill is
+// knowing which side of each given market the replication crosses.
 export type DrillQuestion = { prompt: string; answer: number };
 export type DrillLevel = 'easy' | 'medium' | 'hard';
+export type DrillStyle = 'fair' | 'market';
 
 const r2 = (x: number) => Math.round(x * 100) / 100;
 
@@ -136,10 +141,170 @@ const qBox: Gen = (r) => {
   };
 };
 
+// ---------------------------------------------------------------------------
+// Market style: the givens are bid @ ask markets; the answer is the price at
+// which the replication actually executes. Same-sign legs cross the same side
+// (buy the call = put ask + stock ask); subtracted legs flip (buy the put from
+// P&S = package ask MINUS stock bid); short identities flip entirely (buy the
+// put spread = 5 minus the call spread BID).
+// ---------------------------------------------------------------------------
+
+type Mkt = { bid: number; ask: number };
+const f2 = (x: number) => x.toFixed(2);
+const mm = (m: Mkt) => `${f2(m.bid)} @ ${f2(m.ask)}`;
+const side = (r: Rng): 'buy' | 'sell' => (r.next() < 0.5 ? 'buy' : 'sell');
+
+function mktAround(r: Rng, mid: number, minBid = 0.05): Mkt | null {
+  const w = pick(r, [0.1, 0.2]);
+  const bid = roundTick(mid - w / 2);
+  if (bid < minBid) return null;
+  return { bid, ask: r2(bid + w) };
+}
+
+function marketBase(r: Rng) {
+  const b = parityBase(r);
+  const stk: Mkt = { bid: r2(b.S - 0.1), ask: r2(b.S + 0.1) };
+  return { ...b, stk, mbase: `Stock ${mm(stk)}, r/c ${b.rc.toFixed(2)}.` };
+}
+
+const mPutToCall: Gen = (r) => {
+  const b = marketBase(r);
+  const put = mktAround(r, b.putPx);
+  if (!put) return null;
+  const sd = side(r);
+  const answer = sd === 'buy'
+    ? r2(put.ask + (b.stk.ask - b.K) + b.rc)
+    : r2(put.bid + (b.stk.bid - b.K) + b.rc);
+  if (answer < 0.05) return null;
+  return { prompt: `${b.mbase} The ${b.K} puts are ${mm(put)}. Where can you ${sd} the ${b.K} call?`, answer };
+};
+const mCallToPut: Gen = (r) => {
+  const b = marketBase(r);
+  if (b.callPx < 0.2) return null;
+  const call = mktAround(r, b.callPx);
+  if (!call) return null;
+  const sd = side(r);
+  const answer = sd === 'buy'
+    ? r2(call.ask - (b.stk.bid - b.K) - b.rc) // buy call, SELL stock at the bid
+    : r2(call.bid - (b.stk.ask - b.K) - b.rc);
+  if (answer < 0.05) return null;
+  return { prompt: `${b.mbase} The ${b.K} calls are ${mm(call)}. Where can you ${sd} the ${b.K} put?`, answer };
+};
+const mBwToPut: Gen = (r) => {
+  const b = marketBase(r);
+  const bw = mktAround(r, r2(b.putPx + b.rc), b.rc + 0.05);
+  if (!bw) return null;
+  const sd = side(r);
+  const answer = sd === 'buy' ? r2(bw.ask - b.rc) : r2(bw.bid - b.rc); // stock is a distractor
+  return { prompt: `${b.mbase} The ${b.K} buy-write is ${mm(bw)}. Where can you ${sd} the ${b.K} put?`, answer };
+};
+const mPnsToCall: Gen = (r) => {
+  const b = marketBase(r);
+  if (b.callPx < b.rc + 0.2) return null;
+  const pns = mktAround(r, r2(b.callPx - b.rc));
+  if (!pns) return null;
+  const sd = side(r);
+  const answer = sd === 'buy' ? r2(pns.ask + b.rc) : r2(pns.bid + b.rc); // stock is a distractor
+  return { prompt: `${b.mbase} The ${b.K} puts & stock is ${mm(pns)}. Where can you ${sd} the ${b.K} call?`, answer };
+};
+const mPnsToPut: Gen = (r) => {
+  const b = marketBase(r);
+  const pns = mktAround(r, r2(b.putPx + b.S - b.K));
+  if (!pns) return null;
+  const sd = side(r);
+  const answer = sd === 'buy'
+    ? r2(pns.ask - (b.stk.bid - b.K)) // buy the package, SELL the stock at the bid
+    : r2(pns.bid - (b.stk.ask - b.K));
+  if (answer < 0.05) return null;
+  return { prompt: `${b.mbase} The ${b.K} puts & stock is ${mm(pns)}. Where can you ${sd} the ${b.K} put?`, answer };
+};
+const mBwToCall: Gen = (r) => {
+  const b = marketBase(r);
+  const bw = mktAround(r, r2(b.putPx + b.rc));
+  if (!bw) return null;
+  const sd = side(r);
+  const answer = sd === 'buy'
+    ? r2(bw.ask + (b.stk.ask - b.K)) // same-side stock
+    : r2(bw.bid + (b.stk.bid - b.K));
+  if (answer < 0.05) return null;
+  return { prompt: `${b.mbase} The ${b.K} buy-write is ${mm(bw)}. Where can you ${sd} the ${b.K} call?`, answer };
+};
+const mStockToCombo: Gen = (r) => {
+  const K = 5 * (12 + Math.floor(r.next() * 21));
+  const S = roundTick(K + 0.5 + r.next() * 7.5);
+  const rc = pick(r, [0.05, 0.1, 0.15, 0.2]);
+  const stk: Mkt = { bid: r2(S - 0.1), ask: r2(S + 0.1) };
+  const sd = side(r);
+  const answer = sd === 'buy' ? r2(stk.ask - K + rc) : r2(stk.bid - K + rc);
+  if (answer < 0.05) return null;
+  return { prompt: `Stock ${mm(stk)}, r/c ${rc.toFixed(2)}. Where can you ${sd} the ${K} combo?`, answer };
+};
+const mSpreadFlip: Gen = (r) => {
+  const K1 = 5 * (12 + Math.floor(r.next() * 20));
+  const cs = mktAround(r, roundTick(0.7 + r.next() * 3.5), 0.3);
+  if (!cs || cs.ask > 4.7) return null;
+  const sd = side(r);
+  const answer = sd === 'buy' ? r2(5 - cs.bid) : r2(5 - cs.ask); // opposite side
+  return {
+    prompt: `The ${K1}/${K1 + 5} call spread is ${mm(cs)}. Where can you ${sd} the ${K1}/${K1 + 5} put spread?`,
+    answer,
+  };
+};
+const mBwPnsToStraddle: Gen = (r) => {
+  const b = marketBase(r);
+  if (b.callPx < b.rc + 0.2) return null;
+  const bw = mktAround(r, r2(b.putPx + b.rc));
+  const pns = mktAround(r, r2(b.callPx - b.rc));
+  if (!bw || !pns) return null;
+  const sd = side(r);
+  const answer = sd === 'buy' ? r2(bw.ask + pns.ask) : r2(bw.bid + pns.bid);
+  return {
+    prompt: `The ${b.K} buy-write is ${mm(bw)}, the ${b.K} puts & stock is ${mm(pns)}. Where can you ${sd} the ${b.K} straddle?`,
+    answer,
+  };
+};
+const mFlyToIron: Gen = (r) => {
+  const K = 5 * (13 + Math.floor(r.next() * 19));
+  const fly = mktAround(r, roundTick(0.4 + r.next() * 1.4), 0.1);
+  if (!fly) return null;
+  const sd = side(r);
+  const answer = sd === 'buy' ? r2(5 - fly.bid) : r2(5 - fly.ask); // opposite side
+  return {
+    prompt: `The ${K - 5}/${K}/${K + 5} fly is ${mm(fly)}. Where can you ${sd} the ${K} iron fly?`,
+    answer,
+  };
+};
+const mStradStrangleToIron: Gen = (r) => {
+  const K = 5 * (13 + Math.floor(r.next() * 19));
+  const strad = mktAround(r, roundTick(4 + r.next() * 6), 1);
+  if (!strad) return null;
+  const strangle = mktAround(r, roundTick(Math.max(0.5, (strad.bid + strad.ask) / 2 - 0.8 - r.next() * 2.5)), 0.2);
+  if (!strangle || strangle.ask >= strad.bid) return null;
+  const sd = side(r);
+  const answer = sd === 'buy'
+    ? r2(strad.ask - strangle.bid) // buy the body, sell the wings at the bid
+    : r2(strad.bid - strangle.ask);
+  if (answer < 0.05) return null;
+  return {
+    prompt: `The ${K} straddle is ${mm(strad)}, the ${K - 5}/${K + 5} strangle is ${mm(strangle)}. Where can you ${sd} the ${K} iron fly?`,
+    answer,
+  };
+};
+
 const PARITY_FAMILY = [
   qPutToCall, qCallToPut, qPutToBw, qCallToPns,
   qPnsToPut, qBwToCall, qBwToPut, qPnsToCall, qCombo,
 ];
+
+const MARKET_FAMILY = [
+  mPutToCall, mCallToPut, mBwToPut, mPnsToCall, mPnsToPut, mBwToCall, mStockToCombo,
+];
+
+const GENS_MARKET: Record<DrillLevel, Gen[]> = {
+  easy: MARKET_FAMILY,
+  medium: [...MARKET_FAMILY, mSpreadFlip, mBwPnsToStraddle],
+  hard: [...MARKET_FAMILY, mSpreadFlip, mBwPnsToStraddle, mFlyToIron, mStradStrangleToIron],
+};
 
 const GENS: Record<DrillLevel, Gen[]> = {
   easy: PARITY_FAMILY,
@@ -150,9 +315,14 @@ const GENS: Record<DrillLevel, Gen[]> = {
   ],
 };
 
-export function makeDrill(seed: number, n = 15, level: DrillLevel = 'easy'): DrillQuestion[] {
+export function makeDrill(
+  seed: number,
+  n = 15,
+  level: DrillLevel = 'easy',
+  style: DrillStyle = 'fair'
+): DrillQuestion[] {
   const r = mulberry32(seed || 1);
-  const gens = GENS[level];
+  const gens = style === 'market' ? GENS_MARKET[level] : GENS[level];
   const qs: DrillQuestion[] = [];
   let guard = 0;
   while (qs.length < n && guard++ < n * 30) {

@@ -43,7 +43,7 @@ export default function Setup({
   onDrill,
 }: {
   onStart: (cfg: SessionConfig) => void;
-  onDrill: (level: 'easy' | 'medium' | 'hard') => void;
+  onDrill: (level: 'easy' | 'medium' | 'hard', style: 'fair' | 'market') => void;
 }) {
   const [seed, setSeed] = useState(randSeed());
   const [rounds, setRounds] = useState(24);
@@ -149,9 +149,15 @@ export default function Setup({
         </button>
         <button
           className="big"
-          onClick={() => onDrill(difficulty === 'custom' ? 'hard' : difficulty)}
+          onClick={() => onDrill(difficulty === 'custom' ? 'hard' : difficulty, 'fair')}
         >
-          Parity drill — 15 questions at {difficulty === 'custom' ? 'hard' : difficulty} level
+          Parity drill — fair values, {difficulty === 'custom' ? 'hard' : difficulty} level
+        </button>
+        <button
+          className="big"
+          onClick={() => onDrill(difficulty === 'custom' ? 'hard' : difficulty, 'market')}
+        >
+          Market drill — where can you buy or sell?
         </button>
       </div>
       {hist.length > 0 && (

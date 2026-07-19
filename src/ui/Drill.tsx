@@ -1,10 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
-import { DrillLevel, DrillQuestion, makeDrill } from '../engine/drill';
+import { DrillLevel, DrillQuestion, DrillStyle, makeDrill } from '../engine/drill';
 
 type Result = { correct: boolean; answer: number; given: number | null };
 
-export default function Drill({ level, onExit }: { level: DrillLevel; onExit: () => void }) {
-  const [qs, setQs] = useState<DrillQuestion[]>(() => makeDrill(Date.now() % 1000000, 15, level));
+export default function Drill({
+  level,
+  style,
+  onExit,
+}: {
+  level: DrillLevel;
+  style: DrillStyle;
+  onExit: () => void;
+}) {
+  const [qs, setQs] = useState<DrillQuestion[]>(() => makeDrill(Date.now() % 1000000, 15, level, style));
   const [i, setI] = useState(0);
   const [input, setInput] = useState('');
   const [results, setResults] = useState<Result[]>([]);
@@ -33,21 +41,22 @@ export default function Drill({ level, onExit }: { level: DrillLevel; onExit: ()
   };
 
   const restart = () => {
-    setQs(makeDrill(Date.now() % 1000000, 15, level));
+    setQs(makeDrill(Date.now() % 1000000, 15, level, style));
     setI(0);
     setResults([]);
     setInput('');
     setStartAt(Date.now());
   };
 
+  const title = style === 'market' ? 'Market drill' : 'Parity drill';
   if (done) {
-    const bestKey = `mt-drill-best-${level}`;
+    const bestKey = style === 'market' ? `mt-drill-best-market-${level}` : `mt-drill-best-${level}`;
     const best = Number(localStorage.getItem(bestKey) ?? Infinity);
     const perfect = nCorrect === qs.length;
     if (perfect && secs < best) localStorage.setItem(bestKey, String(Math.round(secs)));
     return (
       <div className="app setup">
-        <h1>Parity drill · {level}</h1>
+        <h1>{title} · {level}</h1>
         <div className="card scoreCard">
           <p className={`score ${perfect ? 'pos' : ''}`}>
             {nCorrect}/{qs.length}
@@ -79,7 +88,7 @@ export default function Drill({ level, onExit }: { level: DrillLevel; onExit: ()
 
   return (
     <div className="app setup">
-      <h1>Parity drill · {level}</h1>
+      <h1>{title} · {level}</h1>
       <p className="dim">
         Question {i + 1} of {qs.length} · {secs.toFixed(0)}s · {nCorrect} right
       </p>
