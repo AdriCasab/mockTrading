@@ -84,7 +84,8 @@ export type Action =
   | { type: 'pass' }
   | { type: 'board'; m: number; K: number; right: Right; side: 'bid' | 'ask'; size?: number }
   | { type: 'stock'; side: 'bid' | 'ask'; size?: number }
-  | { type: 'unwind' };
+  | { type: 'unwind' }
+  | { type: 'net'; keys: string[] };
 
 export const cellKey = (m: number, K: number, right: Right) => `${m}|${K}|${right}`;
 
@@ -561,6 +562,36 @@ export function netDelta(s: GameState): number {
   return d;
 }
 
+// The trader's view of the book: long-call/short-put overlap at each strike
+// collapses into combos; residual legs and stock follow. Row keys are stable
+// so the UI can select rows for manual netting.
+export type BookRow = { key: string; label: string; qty: number };
+
+export function bookRows(s: GameState): BookRow[] {
+  const byStrike: Record<string, { c: number; p: number }> = {};
+  for (const [key, q] of Object.entries(s.posOpt)) {
+    const [m, K, right] = key.split('|');
+    const kk = `${m}|${K}`;
+    byStrike[kk] ??= { c: 0, p: 0 };
+    if (right === 'C') byStrike[kk].c += q;
+    else byStrike[kk].p += q;
+  }
+  const rows: BookRow[] = [];
+  for (const kk of Object.keys(byStrike).sort()) {
+    const [m, K] = kk.split('|');
+    const { c, p } = byStrike[kk];
+    const name = `${s.env.months[Number(m)]} ${K}`;
+    let combos = 0;
+    if (c > 0 && p < 0) combos = Math.min(c, -p);
+    else if (c < 0 && p > 0) combos = -Math.min(-c, p);
+    if (combos) rows.push({ key: `combo|${kk}`, label: `${name} combo`, qty: combos });
+    if (c - combos) rows.push({ key: `opt|${kk}|C`, label: `${name}C`, qty: c - combos });
+    if (p + combos) rows.push({ key: `opt|${kk}|P`, label: `${name}P`, qty: p + combos });
+  }
+  if (s.posStock) rows.push({ key: 'stock', label: 'stock', qty: s.posStock });
+  return rows;
+}
+
 function afterFill(s: GameState) {
   if (isFlat(s)) {
     if (Math.abs(s.cash + s.banked) > 0.001)
@@ -730,6 +761,75 @@ export function reduce(prev: GameState, a: Action): GameState {
         fair: f, edge: (dir === 1 ? f - price : price - f) * size, note: 'board trade',
       });
       feed(s, 'you', `You ${dir === 1 ? 'bought' : 'sold'} the ${product.label} ×${size} at ${fmt(price)} on the board.`);
+      afterFill(s);
+      break;
+    }
+    case 'net': {
+      // Manual netting: the player picks position rows they believe offset.
+      // If the selected legs form a constant payoff, they settle at fair and
+      // leave the book — never automatic, always the player's read.
+      const rows = bookRows(s).filter((row) => a.keys.includes(row.key));
+      const optRows = rows.filter((row) => row.key !== 'stock');
+      if (!optRows.length) break;
+      const stockSel = rows.some((row) => row.key === 'stock');
+      const legs: Record<string, number> = {};
+      for (const row of optRows) {
+        const [kind, m, K, right] = row.key.split('|');
+        if (kind === 'combo') {
+          legs[`${m}|${K}|C`] = (legs[`${m}|${K}|C`] ?? 0) + row.qty;
+          legs[`${m}|${K}|P`] = (legs[`${m}|${K}|P`] ?? 0) - row.qty;
+        } else {
+          legs[`${m}|${K}|${right}`] = (legs[`${m}|${K}|${right}`] ?? 0) + row.qty;
+        }
+      }
+      const perStrike: Record<string, { c: number; p: number }> = {};
+      for (const [key, q] of Object.entries(legs)) {
+        const [m, K, right] = key.split('|');
+        const kk = `${m}|${K}`;
+        perStrike[kk] ??= { c: 0, p: 0 };
+        if (right === 'C') perStrike[kk].c += q;
+        else perStrike[kk].p += q;
+      }
+      const kinked = Object.entries(perStrike).find(([, v]) => v.c + v.p !== 0);
+      if (kinked) {
+        const [m, K] = kinked[0].split('|');
+        feed(s, 'game',
+          `✗ Not flat — the ${s.env.months[Number(m)]} ${K} strike still kinks: calls and puts don't offset there.`);
+        break;
+      }
+      const slope = Object.values(perStrike).reduce((acc, v) => acc + v.c, 0);
+      let stockUsed = 0;
+      if (stockSel) {
+        if (slope === 0) {
+          feed(s, 'game', `✗ Those option legs already offset by themselves — the stock isn't part of that cancel.`);
+          break;
+        }
+        stockUsed = -slope;
+        if (Math.sign(stockUsed) !== Math.sign(s.posStock) || Math.abs(stockUsed) > Math.abs(s.posStock)) {
+          feed(s, 'game',
+            `✗ You'd need ${stockUsed > 0 ? '+' : ''}${stockUsed} stock to flatten those legs — you hold ${s.posStock > 0 ? '+' : ''}${s.posStock}.`);
+          break;
+        }
+      } else if (slope !== 0) {
+        feed(s, 'game',
+          `✗ Not flat — still net ${slope > 0 ? 'long' : 'short'} ${Math.abs(slope)} synthetic stock. Select stock to complete the cancel.`);
+        break;
+      }
+      for (const [key, q] of Object.entries(legs)) {
+        const [m, K, right] = key.split('|');
+        s.cash += q * optTheo(s.env, Number(m), Number(K), right as Right);
+        s.posOpt[key] = (s.posOpt[key] ?? 0) - q;
+        if (s.posOpt[key] === 0) delete s.posOpt[key];
+      }
+      s.cash += stockUsed * s.env.spot;
+      s.posStock -= stockUsed;
+      const what = optRows.map((row) => `${row.qty > 0 ? '+' : ''}${row.qty} ${row.label}`).join(', ');
+      feed(s, 'game',
+        `🔒 Netted off at fair: ${what}${stockUsed ? ` vs ${Math.abs(stockUsed)} stock` : ''}.`);
+      s.decisions.push({
+        round: s.round, label: 'book netting', action: `cancelled out ${what}`,
+        fair: 0, edge: 0, note: 'riskless subset settled at fair',
+      });
       afterFill(s);
       break;
     }

@@ -486,7 +486,20 @@ ul.posList {
   font-variant-numeric: tabular-nums;
 }
 ul.posList li {
-  padding: 3px 0;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+ul.posList li.sel {
+  background: #2b2410;
+  outline: 1px solid #6b5a1e;
+}
+.netButtons {
+  margin: 8px 0;
+}
+.netButtons button {
+  min-height: 36px;
 }
 
 .scoreCard {

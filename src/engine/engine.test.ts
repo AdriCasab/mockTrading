@@ -5,7 +5,7 @@ import * as P from './products';
 import { fair, fmtPx } from './products';
 import {
   newSession, reduce, applyFill, pnl, isFlat, isRiskless, GameState, SessionConfig, RestingOrder, PRODUCT_SETS,
-  bestBuy, bestSell, closureBuyCost, closureSellValue, orderArbProfit, usd,
+  bestBuy, bestSell, closureBuyCost, closureSellValue, orderArbProfit, usd, bookRows,
 } from './session';
 import { makeDrill } from './drill';
 
@@ -409,6 +409,74 @@ describe('difficulty product sets', () => {
       for (const o of s.orders) expect(o.product.kind).not.toBe('roll');
       s = reduce(s, s.mm ? { type: 'pass' } : { type: 'tick' });
     }
+  });
+});
+
+describe('manual netting', () => {
+  const cfg: SessionConfig = { seed: 91, rounds: 24, noise: 1, twoExp: false, shotClock: 0, products: PRODUCT_SETS.easy };
+  it('cancels combos at two strikes against short stock at fair', () => {
+    const s = newSession(cfg);
+    const [K1, K2] = [s.env.strikes[1], s.env.strikes[2]];
+    applyFill(s, P.combo(s.env, 0, K1), 10, 1.0);
+    applyFill(s, P.combo(s.env, 0, K2), 10, 0.5);
+    s.posStock -= 20;
+    s.cash += 20 * s.env.spot;
+    const before = pnl(s);
+    const s2 = reduce(s, { type: 'net', keys: bookRows(s).map((r) => r.key) });
+    expect(isFlat(s2)).toBe(true);
+    expect(pnl(s2)).toBeCloseTo(before, 9);
+    expect(s2.decisions.some((d) => d.label === 'book netting')).toBe(true);
+  });
+  it('cancels combo against combo across strikes without stock', () => {
+    const s = newSession(cfg);
+    const [K1, K2] = [s.env.strikes[1], s.env.strikes[3]];
+    applyFill(s, P.combo(s.env, 0, K1), 10, 1.0);
+    applyFill(s, P.combo(s.env, 0, K2), -10, 0.8);
+    const before = pnl(s);
+    const keys = bookRows(s).filter((r) => r.key !== 'stock').map((r) => r.key);
+    const s2 = reduce(s, { type: 'net', keys });
+    expect(isFlat(s2)).toBe(true);
+    expect(pnl(s2)).toBeCloseTo(before, 9);
+  });
+  it('nets residual call/put pairs plus stock like a combo', () => {
+    const s = newSession(cfg);
+    const K = s.env.strikes[2];
+    applyFill(s, P.call(s.env, 0, K), 5, 2.0);
+    applyFill(s, P.put(s.env, 0, K), -5, 1.0);
+    s.posStock -= 5;
+    s.cash += 5 * s.env.spot;
+    const before = pnl(s);
+    const s2 = reduce(s, { type: 'net', keys: bookRows(s).map((r) => r.key) });
+    expect(isFlat(s2)).toBe(true);
+    expect(pnl(s2)).toBeCloseTo(before, 9);
+  });
+  it('refuses a kinked selection and leaves the book untouched', () => {
+    const s = newSession(cfg);
+    applyFill(s, P.call(s.env, 0, s.env.strikes[2]), 10, 2.0);
+    s.posStock -= 10;
+    s.cash += 10 * s.env.spot;
+    const s2 = reduce(s, { type: 'net', keys: bookRows(s).map((r) => r.key) });
+    expect(s2.posOpt).toEqual(s.posOpt);
+    expect(s2.posStock).toBe(s.posStock);
+    expect(s2.feed[0].text).toContain('kinks');
+  });
+  it('refuses when synthetic stock is left unflattened', () => {
+    const s = newSession(cfg);
+    applyFill(s, P.combo(s.env, 0, s.env.strikes[2]), 10, 1.0);
+    const keys = bookRows(s).filter((r) => r.key.startsWith('combo')).map((r) => r.key);
+    const s2 = reduce(s, { type: 'net', keys });
+    expect(s2.posOpt).toEqual(s.posOpt);
+    expect(s2.feed[0].text).toContain('synthetic stock');
+  });
+  it('refuses when the held stock is insufficient', () => {
+    const s = newSession(cfg);
+    applyFill(s, P.combo(s.env, 0, s.env.strikes[2]), 10, 1.0);
+    s.posStock -= 5;
+    s.cash += 5 * s.env.spot;
+    const s2 = reduce(s, { type: 'net', keys: bookRows(s).map((r) => r.key) });
+    expect(s2.posOpt).toEqual(s.posOpt);
+    expect(s2.posStock).toBe(s.posStock);
+    expect(s2.feed[0].text).toContain('you hold');
   });
 });
 
