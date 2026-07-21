@@ -52,6 +52,114 @@ export function legsText(env: Env, p: Product, sign: 1 | -1): string {
 const opt = (m: number, K: number, right: Right, q: number): Leg => ({ kind: 'opt', m, K, right, q });
 const mo = (env: Env, m: number) => env.months[m];
 
+// A teaching derivation of the product's fair, parity/replication with the
+// numbers plugged in — shown when the player is punished for mispricing. The
+// displayed fair is built from cent-rounded leg theos so the arithmetic always
+// adds up on screen. Returns the fair it derived and the one-line working.
+export function explainFair(env: Env, p: Product): { fair: number; text: string } {
+  const d2 = (x: number) => x.toFixed(2);
+  const r2 = (x: number) => Math.round(x * 100) / 100;
+  const c = (m: number, K: number, right: Right) => r2(optTheo(env, m, K, right));
+  const S = env.spot;
+  const first = p.legs.find((l): l is Extract<Leg, { kind: 'opt' }> => l.kind === 'opt');
+  const m = first ? first.m : 0;
+  const rc = env.rc[m];
+  const opts = p.legs.filter((l): l is Extract<Leg, { kind: 'opt' }> => l.kind === 'opt');
+  const wrap = (fairVal: number, formula: string, plug: string) => ({
+    fair: fairVal,
+    text: `${formula} = ${plug} = ${d2(fairVal)}`,
+  });
+
+  switch (p.kind) {
+    case 'call': {
+      const K = first!.K;
+      const P = c(m, K, 'P');
+      return wrap(r2(P + (S - K) + rc), 'C = P + (S−K) + r/c', `${d2(P)} + (${d2(S)}−${K}) + ${d2(rc)}`);
+    }
+    case 'put': {
+      const K = first!.K;
+      const C = c(m, K, 'C');
+      return wrap(r2(C - (S - K) - rc), 'P = C − (S−K) − r/c', `${d2(C)} − (${d2(S)}−${K}) − ${d2(rc)}`);
+    }
+    case 'combo': {
+      const K = first!.K;
+      return wrap(r2(S - K + rc), 'combo = (S−K) + r/c', `(${d2(S)}−${K}) + ${d2(rc)}`);
+    }
+    case 'bw': {
+      const K = first!.K;
+      const P = c(m, K, 'P');
+      return wrap(r2(P + rc), 'buy-write = P + r/c', `${d2(P)} + ${d2(rc)}`);
+    }
+    case 'pns': {
+      const K = first!.K;
+      const C = c(m, K, 'C');
+      return wrap(r2(C - rc), 'puts & stock = C − r/c', `${d2(C)} − ${d2(rc)}`);
+    }
+    case 'straddle': {
+      const K = first!.K;
+      const C = c(m, K, 'C');
+      const P = c(m, K, 'P');
+      return wrap(r2(C + P), 'straddle = C + P', `${d2(C)} + ${d2(P)}`);
+    }
+    case 'strangle': {
+      const pl = opts.find((l) => l.right === 'P')!;
+      const cl = opts.find((l) => l.right === 'C')!;
+      const Pv = c(m, pl.K, 'P');
+      const Cv = c(m, cl.K, 'C');
+      return wrap(r2(Pv + Cv), `strangle = P${pl.K} + C${cl.K}`, `${d2(Pv)} + ${d2(Cv)}`);
+    }
+    case 'callSpread': {
+      const lo = opts.find((l) => l.q > 0)!;
+      const hi = opts.find((l) => l.q < 0)!;
+      const a = c(m, lo.K, 'C');
+      const b = c(m, hi.K, 'C');
+      return wrap(r2(a - b), `call spread = C${lo.K} − C${hi.K}`, `${d2(a)} − ${d2(b)}`);
+    }
+    case 'putSpread': {
+      const lo = opts.find((l) => l.q > 0)!;
+      const hi = opts.find((l) => l.q < 0)!;
+      const a = c(m, lo.K, 'P');
+      const b = c(m, hi.K, 'P');
+      return wrap(r2(a - b), `put spread = P${lo.K} − P${hi.K}`, `${d2(a)} − ${d2(b)}`);
+    }
+    case 'fly': {
+      const [a, mid, hi] = [...opts].sort((x, y) => x.K - y.K);
+      const av = c(m, a.K, 'C');
+      const bv = c(m, mid.K, 'C');
+      const cv = c(m, hi.K, 'C');
+      return wrap(r2(av - 2 * bv + cv), `fly = C${a.K} − 2·C${mid.K} + C${hi.K}`, `${d2(av)} − 2·${d2(bv)} + ${d2(cv)}`);
+    }
+    case 'ironFly': {
+      const body = opts.find((l) => l.right === 'C' && l.q > 0)!.K;
+      const strad = r2(c(m, body, 'C') + c(m, body, 'P'));
+      const strangle = r2(c(m, body - 5, 'P') + c(m, body + 5, 'C'));
+      return wrap(r2(strad - strangle), 'iron fly = straddle − strangle', `${d2(strad)} − ${d2(strangle)}`);
+    }
+    case 'box': {
+      const Ks = [...new Set(opts.map((l) => l.K))].sort((a, b) => a - b);
+      const w = Ks[1] - Ks[0];
+      return { fair: w, text: `box = strike width = ${Ks[1]}−${Ks[0]} = ${d2(w)}` };
+    }
+    case 'rr': {
+      const pl = opts.find((l) => l.right === 'P')!;
+      const cl = opts.find((l) => l.right === 'C')!;
+      const Pv = c(m, pl.K, 'P');
+      const Cv = c(m, cl.K, 'C');
+      const f = r2(Pv - Cv);
+      return { fair: f, text: `risk reversal = P${pl.K} − C${cl.K} = ${d2(Pv)} − ${d2(Cv)} = ${fmtPx(p, f)}` };
+    }
+    case 'roll': {
+      const f = r2(env.rc[1] - env.rc[0]);
+      return {
+        fair: f,
+        text: `roll = r/c(${env.months[1]}) − r/c(${env.months[0]}) = ${d2(env.rc[1])} − ${d2(env.rc[0])} = ${d2(f)}`,
+      };
+    }
+    default:
+      return { fair: r2(fair(env, p)), text: `fair ≈ ${d2(fair(env, p))}` };
+  }
+}
+
 export const call = (env: Env, m: number, K: number): Product => ({
   kind: 'call', label: `${mo(env, m)} ${K} call`, legs: [opt(m, K, 'C', 1)],
 });

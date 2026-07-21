@@ -4,7 +4,7 @@ import {
   stockBid, stockAsk,
 } from './market';
 import * as P from './products';
-import { Product, fair, fmtPx, legsText } from './products';
+import { Product, fair, fmtPx, legsText, explainFair } from './products';
 
 export type Noise = 0 | 1 | 2;
 
@@ -611,11 +611,15 @@ function afterFill(s: GameState) {
 // Board markets are only accurate to about a tick, so a sub-tick per-lot
 // result is judged as noise, not as a mistake. edge is the total; size scales
 // the thresholds back to per-lot terms.
-function judgeTrade(s: GameState, edge: number, size = 1) {
+function judgeTrade(s: GameState, edge: number, size: number, product: Product) {
   const perLot = edge / size;
   if (perLot >= TICK - 0.001) feed(s, 'game', `✓ Good trade: ${usd(edge)} vs fair.`);
-  else if (perLot <= -(TICK - 0.001)) feed(s, 'game', `✗ Through fair: ${usd(edge)}.`);
-  else if (Math.abs(perLot) <= EPS) feed(s, 'game', `— Scratch. That was right at fair.`);
+  else if (perLot <= -(TICK - 0.001)) {
+    // A bad take: show the fair you crossed and how to have found it.
+    const ex = explainFair(s.env, product);
+    feed(s, 'game', ex.text);
+    feed(s, 'game', `✗ Through fair: ${usd(edge)} — fair was ${fmtPx(product, ex.fair)}. The calc:`);
+  } else if (Math.abs(perLot) <= EPS) feed(s, 'game', `— Scratch. That was right at fair.`);
   else feed(s, 'game', `— About fair (${usd(edge)}) — inside the board's noise.`);
 }
 
@@ -669,7 +673,7 @@ export function reduce(prev: GameState, a: Action): GameState {
       });
       feed(s, 'you',
         `You ${dir === 1 ? 'bought' : 'sold'} the ${o.product.label} ×${o.size} at ${fmtPx(o.product, o.price)}.`);
-      if (!isArb) judgeTrade(s, edge, o.size);
+      if (!isArb) judgeTrade(s, edge, o.size, o.product);
       afterFill(s);
       break;
     }
@@ -691,8 +695,9 @@ export function reduce(prev: GameState, a: Action): GameState {
         feed(s, 'inst', `"Sold to you at ${fmt(bid)}, ${sz} up!"`);
         const q = mkQuote(s.env, leg.m, leg.K, leg.right);
         s.quotes[key] = q;
-        feed(s, 'crowd', `Crowd corrects it to ${fmt(q.bid)} at ${fmt(q.ask)}.`);
-        feed(s, 'game', `✗ Picked off: ${usd(edge)}. Your bid was through fair.`);
+        const ex = explainFair(s.env, product);
+        feed(s, 'game', ex.text);
+        feed(s, 'game', `✗ Picked off — your ${fmt(bid)} bid was over ${fmt(ex.fair)} fair (${usd(edge)}). The calc:`);
       } else if (ask < f - eps) {
         const sz = pick(r, [5, 10, 20]);
         applyFill(s, product, -sz, ask);
@@ -701,8 +706,9 @@ export function reduce(prev: GameState, a: Action): GameState {
         feed(s, 'inst', `"Mine at ${fmt(ask)}, ${sz} up!"`);
         const q = mkQuote(s.env, leg.m, leg.K, leg.right);
         s.quotes[key] = q;
-        feed(s, 'crowd', `Crowd corrects it to ${fmt(q.bid)} at ${fmt(q.ask)}.`);
-        feed(s, 'game', `✗ Picked off: ${usd(edge)}. Your offer was through fair.`);
+        const ex = explainFair(s.env, product);
+        feed(s, 'game', ex.text);
+        feed(s, 'game', `✗ Picked off — your ${fmt(ask)} offer was under ${fmt(ex.fair)} fair (${usd(edge)}). The calc:`);
       } else {
         s.quotes[key] = { bid, ask }; // your market is now the market
         if (r.next() < 0.5) {

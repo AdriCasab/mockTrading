@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mulberry32 } from './rng';
 import { makeEnv, optTheo, fwd, TICK, roundTick } from './market';
 import * as P from './products';
-import { fair, fmtPx } from './products';
+import { fair, fmtPx, explainFair } from './products';
 import {
   newSession, reduce, applyFill, pnl, isFlat, isRiskless, GameState, SessionConfig, RestingOrder, PRODUCT_SETS,
   bestBuy, bestSell, closureBuyCost, closureSellValue, orderArbProfit, usd, bookRows,
@@ -91,6 +91,41 @@ describe('structure identities', () => {
     const s2 = reduce(s, { type: 'unwind' });
     expect(isFlat(s2)).toBe(true);
     expect(pnl(s2)).toBeCloseTo(before, 9);
+  });
+});
+
+describe('explainFair derivations', () => {
+  const K = env1.strikes[2];
+  const products = [
+    P.call(env1, 0, K), P.put(env1, 0, K), P.combo(env1, 0, K),
+    P.bw(env1, 0, K), P.pns(env1, 0, K), P.straddle(env1, 0, K),
+    P.strangle(env1, 0, K), P.callSpread(env1, 0, env1.strikes[1]),
+    P.putSpread(env1, 0, env1.strikes[1]), P.fly(env1, 0, K),
+    P.ironFly(env1, 0, K), P.box(env1, 0, env1.strikes[1], K),
+    P.rr(env1, 0, K), P.roll(env2, env2.strikes[2]),
+  ];
+  it('derives a fair within a cent of the engine fair for every product', () => {
+    for (const p of products) {
+      const env = p.kind === 'roll' ? env2 : env1;
+      const ex = explainFair(env, p);
+      expect(Math.abs(ex.fair - fair(env, p)), `${p.kind}: ${ex.text}`).toBeLessThanOrEqual(0.011);
+      expect(ex.text).toContain('=');
+    }
+  });
+  it('the shown arithmetic actually evaluates to the stated fair', () => {
+    // Every derivation reads "lhs = formula = plug = result"; check the plug.
+    for (const p of products) {
+      const env = p.kind === 'roll' ? env2 : env1;
+      const ex = explainFair(env, p);
+      const parts = ex.text.split(' = ');
+      const shown = Number(parts[parts.length - 1].replace(/[^\d.-].*$/, '').trim());
+      const plug = parts[2]
+        .replace(/·/g, '*')
+        .replace(/−/g, '-')
+        .replace(/[^0-9.+\-*/() ]/g, '');
+      // eslint-disable-next-line no-eval
+      expect(Math.abs(eval(plug) - shown), `${p.kind}: ${ex.text}`).toBeLessThan(0.005);
+    }
   });
 });
 
